@@ -3,6 +3,8 @@
 //! Renders `Vec<PortEntry>` as either an aligned terminal table or a JSON
 //! array to stdout.
 
+use std::io::{self, Write};
+
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table};
 
@@ -14,7 +16,9 @@ const MAX_PROCESS_NAME_LEN: usize = 20;
 /// Print the entries as an aligned table to stdout.
 ///
 /// When `show_header` is `true`, a header row is printed above the data.
-pub fn print_table(entries: &[PortEntry], show_header: bool) {
+///
+/// Returns an error if writing to stdout fails (e.g. broken pipe).
+pub fn print_table(entries: &[PortEntry], show_header: bool) -> Result<()> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
@@ -38,13 +42,16 @@ pub fn print_table(entries: &[PortEntry], show_header: bool) {
         ]);
     }
 
-    println!("{table}");
+    writeln!(io::stdout().lock(), "{table}")?;
+    Ok(())
 }
 
 /// Print the entries as a JSON array to stdout.
+///
+/// Returns an error if serialization or writing to stdout fails.
 pub fn print_json(entries: &[PortEntry]) -> Result<()> {
     let json = serde_json::to_string_pretty(entries)?;
-    println!("{json}");
+    writeln!(io::stdout().lock(), "{json}")?;
     Ok(())
 }
 

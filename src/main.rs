@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     run()
 }
 
-/// Application entry point — separated from `main()` for testability.
+/// Application entry point, separated from `main()` for testability.
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -60,7 +60,7 @@ fn run() -> Result<()> {
     if cli.json {
         display::print_json(&filtered)?;
     } else {
-        display::print_table(&filtered, !cli.no_header);
+        display::print_table(&filtered, !cli.no_header)?;
     }
 
     Ok(())
