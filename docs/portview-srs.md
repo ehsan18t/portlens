@@ -266,4 +266,5 @@ The following features are noted for potential future versions and are not part 
 | --sort flag                | Allow sorting by columns other than port number, such as by PID or process name                                      |
 | Well-known port labels     | An optional annotation column showing the common service name for known ports, for example 22 as SSH or 443 as HTTPS |
 | Package manager publishing | Publishing to Homebrew, winget, and popular Linux package repositories such as the AUR                               |
+| Custom framework rules     | A user config file (e.g. ~/.config/portview/frameworks.toml) allowing custom detection rules that map process names, config files, or Docker images to app labels without modifying source code |
 
