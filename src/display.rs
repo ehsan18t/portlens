@@ -13,8 +13,7 @@ const MAX_PROCESS_NAME_LEN: usize = 20;
 
 /// Print the entries as an aligned table to stdout.
 ///
-/// When `show_header` is `true`, a header row is printed above the data. A
-/// note is appended if any entries have restricted (inaccessible) PIDs.
+/// When `show_header` is `true`, a header row is printed above the data.
 pub fn print_table(entries: &[PortEntry], show_header: bool) {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -26,32 +25,20 @@ pub fn print_table(entries: &[PortEntry], show_header: bool) {
         table.set_header(vec!["PORT", "PROTO", "STATE", "PID", "PROCESS", "USER"]);
     }
 
-    let mut has_restricted = false;
-
     for entry in entries {
-        let pid_str = entry.pid.map_or_else(|| "-".to_string(), |p| p.to_string());
-
         let process_display = truncate_process_name(&entry.process);
-
-        if entry.pid.is_none() {
-            has_restricted = true;
-        }
 
         table.add_row(vec![
             entry.port.to_string(),
             entry.proto.to_string(),
             entry.state.clone(),
-            pid_str,
+            entry.pid.to_string(),
             process_display,
             entry.user.clone(),
         ]);
     }
 
     println!("{table}");
-
-    if has_restricted {
-        println!("\n(*) some processes require elevated privileges to inspect");
-    }
 }
 
 /// Print the entries as a JSON array to stdout.

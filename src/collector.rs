@@ -51,7 +51,7 @@ fn build_entry(l: &listeners::Listener, sys: &System, users: &Users) -> PortEntr
         port: l.socket.port(),
         proto,
         state,
-        pid: Some(l.process.pid),
+        pid: l.process.pid,
         process: l.process.name.clone(),
         user,
     }

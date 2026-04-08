@@ -34,9 +34,9 @@ pub struct PortEntry {
     pub proto: Protocol,
     /// Connection state (e.g. `LISTEN`, `ESTABLISHED`). UDP entries use `"-"`.
     pub state: String,
-    /// Process identifier, or `None` if inaccessible due to permissions.
-    pub pid: Option<u32>,
-    /// Process executable name, or `"restricted"` if the PID is inaccessible.
+    /// Process identifier owning this socket.
+    pub pid: u32,
+    /// Process executable name.
     pub process: String,
     /// Owning user or account name, or `"-"` if unavailable.
     pub user: String,

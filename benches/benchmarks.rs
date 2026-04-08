@@ -21,7 +21,7 @@ fn bench_filter(c: &mut Criterion) {
             } else {
                 "ESTABLISHED".to_string()
             },
-            pid: Some(1000 + u32::from(i)),
+            pid: 1000 + u32::from(i),
             process: format!("proc_{i}"),
             user: "user".to_string(),
         })

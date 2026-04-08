@@ -56,7 +56,7 @@ mod tests {
             port,
             proto,
             state: state.to_string(),
-            pid: Some(1234),
+            pid: 1234,
             process: "test".to_string(),
             user: "user".to_string(),
         }
