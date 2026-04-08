@@ -76,7 +76,7 @@ fn resolve_user(pid: u32, sys: &System, users: &Users) -> String {
         .map_or_else(|| "-".to_string(), |u| u.name().to_string())
 }
 
-/// Minimal refresh kind — we only need user information from each process.
+/// Minimal refresh kind: we only need user information from each process.
 fn process_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing().with_user(UpdateKind::OnlyIfNotSet)
 }
