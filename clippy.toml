@@ -1,0 +1,24 @@
+# portview — clippy configuration
+# Additional clippy tuning beyond Cargo.toml [lints.clippy]
+
+# Functions longer than this trigger too_many_lines
+too-many-lines-threshold = 100
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Maximum number of enum variants before large_enum_variant triggers
+enum-variant-size-threshold = 200
+
+# Disallow dbg! and todo! in committed code
+disallowed-macros = [
+    { path = "std::dbg", reason = "Debug macro left in code — remove before committing" },
+    { path = "std::todo", reason = "Unfinished code — implement before committing" },
+    { path = "std::unimplemented", reason = "Unfinished code — implement before committing" },
+]
+
+# Disallow print to stderr via eprintln in tests (use proper assertions)
+# Disallow panicking functions in production code paths
+disallowed-methods = [
+    { path = "std::process::abort", reason = "Use anyhow::bail! or return Err() instead" },
+]

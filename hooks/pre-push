@@ -1,0 +1,98 @@
+#!/bin/sh
+# portview — Pre-push hook
+# Runs the full quality gate before pushing to remote.
+# This mirrors the CI checks so issues are caught locally before a PR.
+#
+# Install: copy this file to .git/hooks/pre-push (or run scripts/install-hooks.ps1)
+#          chmod +x .git/hooks/pre-push  (Linux/macOS)
+#
+# What it checks:
+#   1. cargo fmt --check   — formatting
+#   2. cargo clippy        — lint violations (deny level from Cargo.toml)
+#   3. cargo test          — all tests pass
+#   4. cargo build         — debug build compiles
+#   5. cargo doc           — documentation builds
+#   6. cargo deny check    — dependency audit (if cargo-deny is installed)
+
+set -e
+
+echo "╔══════════════════════════════════════════╗"
+echo "║     portview Pre-Push Quality Gate        ║"
+echo "╚══════════════════════════════════════════╝"
+echo ""
+
+# Gate 1: Formatting
+echo "→ [1/6] Checking formatting..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "✗ FORMATTING FAILED"
+    echo "  Run: cargo fmt"
+    echo "  Then try pushing again."
+    exit 1
+fi
+echo "  ✓ Formatting OK"
+
+# Gate 2: Clippy (uses deny-level lints from Cargo.toml)
+echo "→ [2/6] Running clippy..."
+if ! cargo clippy --all-targets -- -D warnings; then
+    echo ""
+    echo "✗ CLIPPY FAILED"
+    echo "  Fix the lint errors above, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Clippy OK"
+
+# Gate 3: Tests
+echo "→ [3/6] Running tests..."
+if ! cargo test --all-targets; then
+    echo ""
+    echo "✗ TESTS FAILED"
+    echo "  Fix the failing tests, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Tests OK"
+
+# Gate 4: Documentation
+echo "→ [4/6] Building docs..."
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps; then
+    echo ""
+    echo "✗ DOCUMENTATION BUILD FAILED"
+    echo "  Fix the doc errors, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Docs OK"
+
+# Gate 5: Dependency audit (optional — only if cargo-deny is installed)
+echo "→ [5/6] Auditing dependencies..."
+if command -v cargo-deny >/dev/null 2>&1; then
+    if ! cargo deny check 2>/dev/null; then
+        # Advisory DB fetch can fail due to stale cache; clear and retry
+        echo "  ⚠ First attempt failed — clearing advisory-db cache and retrying..."
+        rm -rf "$HOME/.cargo/advisory-dbs" "$HOME/.cargo/advisory-db" 2>/dev/null
+        if ! cargo deny check 2>/dev/null; then
+            echo ""
+            echo "⚠ DEPENDENCY AUDIT FAILED (non-blocking)"
+            echo "  CI will enforce this check on the pull request."
+            echo "  To debug locally: cargo deny check"
+        else
+            echo "  ✓ Dependency audit OK (after cache clear)"
+        fi
+    else
+        echo "  ✓ Dependency audit OK"
+    fi
+else
+    echo "  ⊘ cargo-deny not installed, skipping (install: cargo install cargo-deny)"
+fi
+
+# Gate 6: Debug build
+echo "→ [6/6] Building debug binary..."
+if ! cargo build; then
+    echo ""
+    echo "✗ DEBUG BUILD FAILED"
+    echo "  Fix the build errors, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Debug build OK"
+
+echo ""
+echo "✓ All quality gates passed. Pushing..."

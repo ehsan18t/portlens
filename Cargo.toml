@@ -1,0 +1,51 @@
+[package]
+name = "portview"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ehsan Khan"]
+description = "A cross-platform CLI tool that lists open network ports and their associated processes"
+license = "MIT"
+readme = "README.md"
+keywords = ["port", "network", "socket", "process", "cli"]
+categories = ["command-line-utilities", "network-programming"]
+repository = "https://github.com/ehsan18t/portview"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+# Binary-only crate: modules are pub solely for criterion benchmark access,
+# not for use as a public library API. Public-API documentation lints are
+# intentionally relaxed.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+# Deny common footguns
+let_underscore_drop = "deny"
+non_ascii_idents = "deny"
+
+[dependencies]
+listeners = "0.5"
+sysinfo = "0.38"
+clap = { version = "4", features = ["derive", "color", "help", "usage", "suggestions"] }
+comfy-table = "7"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,52 @@
+#!/bin/sh
+# portview — Pre-commit hook
+# Prevents committing code that doesn't pass quality gates.
+#
+# Install: copy this file to .git/hooks/pre-commit (or run the setup script)
+#          chmod +x .git/hooks/pre-commit  (Linux/macOS)
+#
+# What it checks:
+#   1. cargo fmt --check  — formatting
+#   2. cargo clippy        — lint violations (deny level from Cargo.toml)
+#   3. cargo test          — all tests pass
+
+set -e
+
+echo "╔══════════════════════════════════════════╗"
+echo "║     portview Pre-Commit Quality Gate      ║"
+echo "╚══════════════════════════════════════════╝"
+echo ""
+
+# Gate 1: Formatting
+echo "→ Checking formatting..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "✗ FORMATTING FAILED"
+    echo "  Run: cargo fmt"
+    echo "  Then try committing again."
+    exit 1
+fi
+echo "  ✓ Formatting OK"
+
+# Gate 2: Clippy (uses deny-level lints from Cargo.toml)
+echo "→ Running clippy..."
+if ! cargo clippy --all-targets; then
+    echo ""
+    echo "✗ CLIPPY FAILED"
+    echo "  Fix the lint errors above, then try committing again."
+    exit 1
+fi
+echo "  ✓ Clippy OK"
+
+# Gate 3: Tests
+echo "→ Running tests..."
+if ! cargo test --all-targets; then
+    echo ""
+    echo "✗ TESTS FAILED"
+    echo "  Fix the failing tests, then try committing again."
+    exit 1
+fi
+echo "  ✓ Tests OK"
+
+echo ""
+echo "✓ All quality gates passed. Committing..."
