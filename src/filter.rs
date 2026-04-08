@@ -137,4 +137,77 @@ mod tests {
         );
         assert_eq!(result[0].state, "LISTEN");
     }
+
+    #[test]
+    fn udp_only_filter() {
+        let entries = vec![
+            make_entry(80, Protocol::Tcp, "LISTEN"),
+            make_entry(53, Protocol::Udp, "-"),
+            make_entry(5353, Protocol::Udp, "-"),
+        ];
+        let opts = FilterOptions {
+            tcp_only: false,
+            udp_only: true,
+            listen_only: false,
+            port: None,
+        };
+        let result = apply(&entries, &opts);
+        assert_eq!(result.len(), 2, "udp_only should exclude TCP entries");
+        assert!(
+            result.iter().all(|e| e.proto == Protocol::Udp),
+            "all results should be UDP"
+        );
+    }
+
+    #[test]
+    fn combined_tcp_and_port_filter() {
+        let entries = vec![
+            make_entry(80, Protocol::Tcp, "LISTEN"),
+            make_entry(80, Protocol::Udp, "-"),
+            make_entry(443, Protocol::Tcp, "LISTEN"),
+        ];
+        let opts = FilterOptions {
+            tcp_only: true,
+            udp_only: false,
+            listen_only: false,
+            port: Some(80),
+        };
+        let result = apply(&entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "combined tcp+port filter should match exactly one entry"
+        );
+        assert_eq!(result[0].port, 80);
+        assert_eq!(result[0].proto, Protocol::Tcp);
+    }
+
+    #[test]
+    fn no_matches_returns_empty() {
+        let entries = vec![
+            make_entry(80, Protocol::Tcp, "LISTEN"),
+            make_entry(53, Protocol::Udp, "-"),
+        ];
+        let opts = FilterOptions {
+            tcp_only: false,
+            udp_only: false,
+            listen_only: false,
+            port: Some(9999),
+        };
+        let result = apply(&entries, &opts);
+        assert!(result.is_empty(), "non-matching port should return empty");
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let entries: Vec<PortEntry> = vec![];
+        let opts = FilterOptions {
+            tcp_only: true,
+            udp_only: false,
+            listen_only: false,
+            port: None,
+        };
+        let result = apply(&entries, &opts);
+        assert!(result.is_empty(), "empty input should return empty output");
+    }
 }

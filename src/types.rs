@@ -26,7 +26,7 @@ impl std::fmt::Display for Protocol {
 ///
 /// Each entry represents one open socket on the local machine, enriched with
 /// process metadata where available.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PortEntry {
     /// Local port number.
     pub port: u16,
@@ -40,4 +40,24 @@ pub struct PortEntry {
     pub process: String,
     /// Owning user or account name, or `"-"` if unavailable.
     pub user: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_display_tcp() {
+        assert_eq!(Protocol::Tcp.to_string(), "TCP", "TCP display string");
+    }
+
+    #[test]
+    fn protocol_display_udp() {
+        assert_eq!(Protocol::Udp.to_string(), "UDP", "UDP display string");
+    }
+
+    #[test]
+    fn protocol_ordering() {
+        assert!(Protocol::Tcp < Protocol::Udp, "TCP should sort before UDP");
+    }
 }
