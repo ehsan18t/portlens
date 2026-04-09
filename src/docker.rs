@@ -112,7 +112,8 @@ fn fetch_containers_json() -> Option<String> {
 
     for path in &socket_paths {
         if let Ok(mut stream) = UnixStream::connect(path) {
-            stream.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+            // Best-effort timeout; proceed even if it cannot be set.
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
             return send_http_request(&mut stream);
         }
     }
