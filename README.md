@@ -2,7 +2,7 @@
 
 **A cross-platform CLI tool that lists open network ports and their associated processes.**
 
-A fast, readable alternative to `netstat` and `ss`. Single binary, no dependencies, works on Linux and Windows.
+A fast, readable alternative to `netstat` and `ss`. Single binary with no external tool dependencies, works on Linux and Windows.
 
 ---
 
@@ -135,7 +135,7 @@ Additional columns with `--full`:
 
 | Column | Description                                                |
 | ------ | ---------------------------------------------------------- |
-| STATE  | TCP state such as `LISTEN` or `ESTABLISHED`; UDP shows `-` |
+| STATE  | Best-effort TCP state; ambiguous sockets show `UNKNOWN`, UDP shows `-` |
 | USER   | Owning user. Shows `-` if unavailable                      |
 
 ---
@@ -152,6 +152,8 @@ Additional columns with `--full`:
 3. Process executable name (e.g. `nginx` -> Nginx)
 
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux) or named pipe (Windows). Podman is supported via its compatible REST API.
+
+**Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs on the same port stay visible.
 
 ---
 

@@ -4,6 +4,7 @@
 //! resolve process metadata (name, owning user). Enriches each entry with
 //! Docker container info, project root detection, and app/framework labels.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -36,9 +37,9 @@ struct CollectContext<'a> {
 /// Entries where the PID or username cannot be resolved are still included
 /// with placeholder values.
 ///
-/// When multiple OS-level sockets share the same port and protocol (e.g.
-/// Docker Desktop on Windows binding to both IPv4 and IPv6), only the
-/// most enriched entry is kept.
+/// Repeated rows from the same PID are collapsed. Known Docker proxy
+/// duplicates (for example Docker Desktop binding both IPv4 and IPv6)
+/// are collapsed as well, but distinct non-proxy PIDs remain visible.
 pub fn collect() -> Result<Vec<PortEntry>> {
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.
@@ -449,9 +450,6 @@ fn merge_state(current: State, next: State) -> State {
     if next == State::Unknown {
         return current;
     }
-    if current == State::Listen || next == State::Listen {
-        return State::Listen;
-    }
 
     State::Unknown
 }
@@ -548,10 +546,10 @@ fn extract_cmd(process: Option<&sysinfo::Process>) -> Vec<String> {
 /// Deduplicate entries that share the same user-visible logical socket.
 ///
 /// On Windows with Docker Desktop (WSL2), the OS reports multiple sockets
-/// for the same Docker-published port (e.g. `wslrelay.exe` on IPv4,
-/// `com.docker.backend.exe` on both IPv4 and IPv6). This keeps only the
-/// entry with the richest enrichment data when Docker or project metadata
-/// reveals a single logical owner. Otherwise it keeps one row per process.
+/// for the same Docker-published port (for example `wslrelay.exe` on IPv4
+/// and `com.docker.backend.exe` on IPv4 and IPv6). This collapses repeated
+/// rows from the same PID and then removes known Docker proxy duplicates
+/// while preserving distinct non-proxy worker processes.
 fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     let mut grouped: HashMap<(u16, Protocol, State), Vec<PortEntry>> = HashMap::new();
 
@@ -563,24 +561,27 @@ fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     let mut deduplicated = Vec::new();
 
     for group in grouped.into_values() {
-        if let Some(best) = best_enriched_entry(&group) {
-            deduplicated.push(best);
-            continue;
-        }
-
-        deduplicated.extend(deduplicate_by_pid(group));
+        deduplicated.extend(deduplicate_group(group));
     }
 
     deduplicated
 }
 
-/// Pick the best enriched row for a logical port, if any exist.
-fn best_enriched_entry(entries: &[PortEntry]) -> Option<PortEntry> {
-    entries
-        .iter()
-        .filter(|entry| entry.project.is_some() || entry.app.is_some())
-        .max_by_key(|entry| enrichment_score(entry))
-        .cloned()
+fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    let deduplicated = deduplicate_by_pid(entries);
+    if deduplicated.len() <= 1 {
+        return deduplicated;
+    }
+
+    let (proxy_entries, real_entries): (Vec<_>, Vec<_>) = deduplicated
+        .into_iter()
+        .partition(|entry| is_docker_proxy_process(&entry.process));
+
+    if real_entries.is_empty() {
+        return best_entry(proxy_entries).into_iter().collect();
+    }
+
+    real_entries
 }
 
 /// Deduplicate repeated rows from the same process while preserving distinct PIDs.
@@ -592,7 +593,7 @@ fn deduplicate_by_pid(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     for entry in entries {
         match best_by_pid.entry(entry.pid) {
             Entry::Occupied(mut slot) => {
-                if enrichment_score(&entry) > enrichment_score(slot.get()) {
+                if compare_entry_preference(&entry, slot.get()).is_gt() {
                     slot.insert(entry);
                 }
             }
@@ -603,6 +604,28 @@ fn deduplicate_by_pid(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     }
 
     best_by_pid.into_values().collect()
+}
+
+fn best_entry(entries: Vec<PortEntry>) -> Option<PortEntry> {
+    entries.into_iter().max_by(compare_entry_preference)
+}
+
+fn compare_entry_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
+    enrichment_score(left)
+        .cmp(&enrichment_score(right))
+        .then_with(|| right.pid.cmp(&left.pid))
+        .then_with(|| right.process.as_str().cmp(left.process.as_str()))
+}
+
+fn is_docker_proxy_process(process_name: &str) -> bool {
+    const DOCKER_PROXY_PROCESSES: &[&str] =
+        &["wslrelay", "com.docker.backend", "vpnkit", "docker-proxy"];
+
+    let normalized = process_name.to_ascii_lowercase();
+    let name = normalized
+        .strip_suffix(".exe")
+        .unwrap_or(normalized.as_str());
+    DOCKER_PROXY_PROCESSES.contains(&name)
 }
 
 /// Score an entry by how much enrichment data it carries.
@@ -738,15 +761,56 @@ mod tests {
         enriched.app = Some("PostgreSQL".to_string());
         enriched.uptime_secs = Some(3600);
 
-        // Insert bare first, enriched second
         let result = deduplicate(vec![bare, enriched]);
         assert_eq!(result.len(), 1);
         let entry = &result[0];
         assert_eq!(
             entry.project.as_deref(),
             Some("my-postgres"),
-            "should keep the enriched entry"
+            "should keep the richest proxy entry"
         );
+    }
+
+    #[test]
+    fn dedup_keeps_distinct_enriched_workers() {
+        let mut first = make_entry(8080, Protocol::Tcp);
+        first.pid = 1001;
+        first.process = "nginx".to_string();
+        first.app = Some("Nginx".to_string());
+
+        let mut second = make_entry(8080, Protocol::Tcp);
+        second.pid = 1002;
+        second.process = "nginx".to_string();
+        second.app = Some("Nginx".to_string());
+
+        let result = deduplicate(vec![first, second]);
+        assert_eq!(
+            result.len(),
+            2,
+            "distinct worker PIDs should remain visible"
+        );
+    }
+
+    #[test]
+    fn dedup_drops_proxy_when_real_process_exists() {
+        let mut proxy = make_entry(5432, Protocol::Tcp);
+        proxy.pid = 1001;
+        proxy.process = "wslrelay.exe".to_string();
+        proxy.project = Some("my-postgres".to_string());
+        proxy.app = Some("PostgreSQL".to_string());
+
+        let mut real = make_entry(5432, Protocol::Tcp);
+        real.pid = 1002;
+        real.process = "postgres".to_string();
+        real.app = Some("PostgreSQL".to_string());
+
+        let result = deduplicate(vec![proxy, real]);
+        assert_eq!(
+            result.len(),
+            1,
+            "docker proxy rows should yield to real processes"
+        );
+        assert_eq!(result[0].process, "postgres");
     }
 
     #[test]
@@ -780,11 +844,19 @@ mod tests {
     }
 
     #[test]
-    fn merge_state_prefers_listen_when_socket_is_ambiguous() {
+    fn merge_state_marks_conflicts_unknown() {
         assert_eq!(
             merge_state(State::Established, State::Listen),
-            State::Listen,
-            "listen should win when a socket appears in multiple TCP states"
+            State::Unknown,
+            "conflicting states should become unknown instead of guessing"
         );
+    }
+
+    #[test]
+    fn docker_proxy_process_names_are_detected_case_insensitively() {
+        assert!(is_docker_proxy_process("wslrelay.exe"));
+        assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
+        assert!(is_docker_proxy_process("vpnkit"));
+        assert!(!is_docker_proxy_process("nginx"));
     }
 }
