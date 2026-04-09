@@ -1,14 +1,17 @@
 //! Benchmarks for portview.
 //!
-//! Uses criterion for statistical benchmarking.
+//! Uses criterion for statistical benchmarking. Setup code (cloning
+//! input data) is isolated from measurement via `iter_batched` so
+//! results reflect only the code under test.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use portview::docker;
+use portview::filter::{self, FilterOptions};
+use portview::types::{PortEntry, Protocol, State};
 
-fn bench_filter(c: &mut Criterion) {
-    use portview::filter::{self, FilterOptions};
-    use portview::types::{PortEntry, Protocol, State};
-
-    let entries: Vec<PortEntry> = (0..500)
+/// Build a synthetic dataset of `n` port entries with mixed metadata.
+fn synthetic_entries(n: u16) -> Vec<PortEntry> {
+    (0..n)
         .map(|i| PortEntry {
             port: i,
             proto: if i % 2 == 0 {
@@ -16,7 +19,7 @@ fn bench_filter(c: &mut Criterion) {
             } else {
                 Protocol::Udp
             },
-            state: if i % 3 == 0 {
+            state: if i % 2 == 0 {
                 State::Listen
             } else {
                 State::NotApplicable
@@ -36,23 +39,90 @@ fn bench_filter(c: &mut Criterion) {
             },
             uptime_secs: Some(u64::from(i) * 3600),
         })
-        .collect();
+        .collect()
+}
 
+fn bench_filter(c: &mut Criterion) {
+    let entries = synthetic_entries(500);
+
+    let tcp_only = FilterOptions {
+        tcp_only: true,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        show_all: true,
+    };
     c.bench_function("filter_tcp_only_500", |b| {
-        b.iter(|| {
-            filter::apply(
-                entries.clone(),
-                &FilterOptions {
-                    tcp_only: true,
-                    udp_only: false,
-                    listen_only: false,
-                    port: None,
-                    show_all: true,
-                },
-            )
-        });
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &tcp_only),
+            BatchSize::SmallInput,
+        );
+    });
+
+    let relevance = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        show_all: false,
+    };
+    c.bench_function("filter_relevance_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &relevance),
+            BatchSize::SmallInput,
+        );
+    });
+
+    let port_filter = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: Some(250),
+        show_all: true,
+    };
+    c.bench_function("filter_port_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &port_filter),
+            BatchSize::SmallInput,
+        );
+    });
+
+    let combined = FilterOptions {
+        tcp_only: true,
+        udp_only: false,
+        listen_only: true,
+        port: None,
+        show_all: false,
+    };
+    c.bench_function("filter_combined_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &combined),
+            BatchSize::SmallInput,
+        );
     });
 }
 
-criterion_group!(benches, bench_filter);
+fn bench_docker_parse(c: &mut Criterion) {
+    let json = r#"[
+        {"Names":["/pg"],"Image":"postgres:16","Ports":[
+            {"PrivatePort":5432,"PublicPort":5432,"Type":"tcp"}]},
+        {"Names":["/redis"],"Image":"redis:7","Ports":[
+            {"PrivatePort":6379,"PublicPort":6379,"Type":"tcp"}]},
+        {"Names":["/web"],"Image":"nginx:latest","Ports":[
+            {"PrivatePort":80,"PublicPort":8080,"Type":"tcp"},
+            {"PrivatePort":443,"PublicPort":8443,"Type":"tcp"}]},
+        {"Names":["/api"],"Image":"node","Ports":[
+            {"PrivatePort":3000,"PublicPort":3000,"Type":"tcp"}]}
+    ]"#;
+
+    c.bench_function("docker_parse_4_containers", |b| {
+        b.iter(|| docker::parse_containers_json(json));
+    });
+}
+
+criterion_group!(benches, bench_filter, bench_docker_parse);
 criterion_main!(benches);
