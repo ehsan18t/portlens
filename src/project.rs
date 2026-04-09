@@ -40,11 +40,19 @@ const MAX_WALK_DEPTH: usize = 16;
 /// Tries the working directory first, then falls back to parsing
 /// command-line arguments for absolute file paths.
 ///
+/// `home` is the user's home directory used as an upward-walk ceiling.
+/// Pass the value resolved once by the caller to avoid repeated env
+/// lookups across many processes.
+///
 /// Returns the project root directory path, or `None` if no project
 /// root can be determined.
-pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Option<PathBuf> {
+pub fn detect_project_root(
+    cwd: Option<&Path>,
+    cmd: &[impl AsRef<str>],
+    home: Option<&Path>,
+) -> Option<PathBuf> {
     if let Some(cwd) = cwd
-        && let Some(root) = find_from_dir(cwd)
+        && let Some(root) = find_from_dir(cwd, home)
     {
         return Some(root);
     }
@@ -54,7 +62,7 @@ pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Optio
         let path = Path::new(arg.as_ref());
         if path.is_absolute()
             && let Some(parent) = path.parent()
-            && let Some(root) = find_from_dir(parent)
+            && let Some(root) = find_from_dir(parent, home)
         {
             return Some(root);
         }
@@ -65,28 +73,33 @@ pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Optio
 
 /// Walk upward from `start` looking for project marker files.
 ///
+/// `home` is an optional ceiling directory. When `current` reaches
+/// `home`, the walk stops regardless of whether a marker exists there.
+/// This prevents stray markers in `~` from polluting unrelated processes.
+///
 /// Returns the path of the directory containing the first marker found,
 /// or `None` if no marker is found before reaching any of the following
 /// ceilings:
 ///
-/// - The user's home directory (not checked; prevents stray markers in
-///   `~` from polluting every unrelated process).
+/// - `home` (when provided).
 /// - [`MAX_WALK_DEPTH`] levels above `start`.
 /// - The filesystem root.
+///
+/// Callers should resolve the home directory once and pass it in so
+/// that repeated calls do not each query the OS environment.
 ///
 /// This is the cwd-only variant exposed for caching in the collector.
 /// Use [`detect_project_root`] for the full detection pipeline that also
 /// checks command-line arguments.
 #[must_use]
-pub fn find_from_dir(start: &Path) -> Option<PathBuf> {
-    let home = home_dir();
+pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
 
     for _ in 0..MAX_WALK_DEPTH {
         // Stop at the user's home directory to avoid matching stray
         // marker files that were accidentally placed in ~ or above.
-        if let Some(ref h) = home
-            && current == *h
+        if let Some(h) = home
+            && current == h
         {
             return None;
         }
@@ -107,7 +120,12 @@ pub fn find_from_dir(start: &Path) -> Option<PathBuf> {
 /// Uses `HOME` on Unix and `USERPROFILE` on Windows. Returns `None`
 /// when the environment variable is unset, in which case only the
 /// [`MAX_WALK_DEPTH`] limit guards against over-traversal.
-fn home_dir() -> Option<PathBuf> {
+///
+/// Callers should call this **once** and pass the result into
+/// [`find_from_dir`] / [`detect_project_root`] to avoid repeated
+/// environment-variable lookups across many process entries.
+#[must_use]
+pub fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
         std::env::var_os("HOME").map(PathBuf::from)
@@ -162,28 +180,28 @@ mod tests {
     #[test]
     fn detect_node_project() {
         let dir = setup_project("package.json");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn detect_rust_project() {
         let dir = setup_project("Cargo.toml");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn detect_go_project() {
         let dir = setup_project("go.mod");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn detect_python_project() {
         let dir = setup_project("pyproject.toml");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
@@ -192,20 +210,20 @@ mod tests {
         let dir = setup_project("package.json");
         let sub = dir.path().join("src").join("deep");
         fs::create_dir_all(&sub).unwrap();
-        let result = detect_project_root(Some(&sub), &Vec::<String>::new());
+        let result = detect_project_root(Some(&sub), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn detect_no_marker_returns_none() {
         let dir = TempDir::new().unwrap();
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert!(result.is_none());
     }
 
     #[test]
     fn detect_none_cwd_returns_none() {
-        let result = detect_project_root(None, &Vec::<String>::new());
+        let result = detect_project_root(None, &Vec::<String>::new(), None);
         assert!(result.is_none());
     }
 
@@ -213,7 +231,7 @@ mod tests {
     fn detect_csproj_extension_marker() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("MyApp.csproj"), "").unwrap();
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new());
+        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
@@ -224,32 +242,21 @@ mod tests {
         fs::create_dir_all(fake_path.parent().unwrap()).unwrap();
         fs::write(&fake_path, "").unwrap();
         let cmd = vec![fake_path.to_string_lossy().into_owned()];
-        let result = detect_project_root(None, &cmd);
+        let result = detect_project_root(None, &cmd, None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn walk_stops_at_home_ceiling() {
-        // Simulate a stray marker in a directory treated as "home".
-        // Override HOME/USERPROFILE so find_from_dir sees a ceiling.
+        // Inject the fake home directory directly as a parameter — no
+        // environment mutation needed, so this test is safe to run in
+        // parallel with other tests.
         let fake_home = TempDir::new().unwrap();
         fs::write(fake_home.path().join("package.json"), "").unwrap();
         let sub = fake_home.path().join("unrelated");
         fs::create_dir_all(&sub).unwrap();
 
-        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-        let original = std::env::var_os(var);
-        // Safety: test is single-threaded; no concurrent readers of this var.
-        unsafe { std::env::set_var(var, fake_home.path()) };
-
-        let result = find_from_dir(&sub);
-
-        // Restore original value to avoid polluting other tests.
-        if let Some(orig) = original {
-            // Safety: same single-threaded test context.
-            unsafe { std::env::set_var(var, orig) };
-        }
-
+        let result = find_from_dir(&sub, Some(fake_home.path()));
         assert!(
             result.is_none(),
             "should NOT match stray marker in the home directory"
@@ -268,7 +275,7 @@ mod tests {
         }
         fs::create_dir_all(&deep).unwrap();
 
-        let result = find_from_dir(&deep);
+        let result = find_from_dir(&deep, None);
         assert!(
             result.is_none(),
             "walk should stop after MAX_WALK_DEPTH levels"

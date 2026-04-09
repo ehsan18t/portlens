@@ -46,6 +46,10 @@ pub fn collect() -> Result<Vec<PortEntry>> {
 
     let mut project_cache: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
 
+    // Resolve the home directory once so that every per-process
+    // invocation of find_from_dir does not each query the OS environment.
+    let home = project::home_dir();
+
     let all_entries: Vec<PortEntry> = raw_listeners
         .into_iter()
         .map(|l| {
@@ -56,6 +60,7 @@ pub fn collect() -> Result<Vec<PortEntry>> {
                 &container_map,
                 now_epoch,
                 &mut project_cache,
+                home.as_deref(),
             )
         })
         .collect();
@@ -74,6 +79,7 @@ fn build_entry(
     container_map: &ContainerPortMap,
     now_epoch: u64,
     project_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    home: Option<&Path>,
 ) -> PortEntry {
     let proto = match l.protocol {
         listeners::Protocol::TCP => Protocol::Tcp,
@@ -98,7 +104,7 @@ fn build_entry(
         || {
             let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
             let cmd = extract_cmd(sysinfo_process);
-            let root = lookup_project_root(cwd, &cmd, project_cache);
+            let root = lookup_project_root(cwd, &cmd, project_cache, home);
             let name = root
                 .as_ref()
                 .and_then(|r| r.file_name())
@@ -143,10 +149,14 @@ fn build_entry(
 /// Accepts `Option<&Path>` to avoid allocating a `PathBuf` for every
 /// process on the cache-hit path. A `PathBuf` is only allocated on a
 /// cache miss when inserting the result.
+///
+/// `home` is the user's home directory ceiling resolved once by
+/// [`collect`] and passed down to avoid repeated env-var reads.
 fn lookup_project_root(
     cwd: Option<&Path>,
     cmd: &[String],
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    home: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(cwd_path) = cwd {
         if let Some(cached) = cache.get(cwd_path) {
@@ -155,7 +165,7 @@ fn lookup_project_root(
             }
             // Cached None: cwd walk found nothing; fall through to cmd-args.
         } else {
-            let result = project::find_from_dir(cwd_path);
+            let result = project::find_from_dir(cwd_path, home);
             cache.insert(cwd_path.to_path_buf(), result.clone());
             if result.is_some() {
                 return result;
@@ -165,7 +175,7 @@ fn lookup_project_root(
 
     // Delegate the cmd-args fallback to the project module so the
     // logic is not duplicated in two places.
-    project::detect_project_root(None, cmd)
+    project::detect_project_root(None, cmd, home)
 }
 
 /// Extract command-line arguments from a sysinfo process handle.
