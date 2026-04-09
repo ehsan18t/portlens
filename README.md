@@ -129,7 +129,7 @@ Default columns:
 | PID     | Process identifier                                       |
 | PROJECT | Project directory name or Docker container name          |
 | APP     | Detected app/framework (e.g. Next.js, PostgreSQL, Redis) |
-| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h)                      |
+| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h 15m)                  |
 
 Additional columns with `--full`:
 

@@ -3,6 +3,7 @@
 //! Identifies the technology behind a port using three strategies:
 //! Docker image name, config file detection, and process name matching.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::docker::ContainerInfo;
@@ -101,66 +102,40 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
         return None;
     };
 
-    let rack_priority = CONFIG_PATTERNS
+    let file_names: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+
+    let exact_names: HashSet<_> = file_names.iter().map(String::as_str).collect();
+    let extensions: HashSet<_> = file_names
         .iter()
-        .position(|&(pattern, _, _)| pattern == "mix.exs")
-        .unwrap_or(CONFIG_PATTERNS.len());
+        .filter_map(|name| std::path::Path::new(name).extension())
+        .filter_map(std::ffi::OsStr::to_str)
+        .collect();
 
-    // Track best match by its position in CONFIG_PATTERNS (lower = higher
-    // priority). This lets us return the highest-priority match while
-    // iterating only once through the directory entries.
-    let mut best: Option<(usize, &'static str)> = None;
-    let mut has_gemfile = false;
-    let mut has_config_ru = false;
-
-    for entry in entries.filter_map(Result::ok) {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
+    for (pattern, label, match_kind) in CONFIG_PATTERNS {
+        let matches = match match_kind {
+            ConfigMatchKind::Exact => exact_names.contains(pattern),
+            ConfigMatchKind::Prefix => file_names.iter().any(|name| name.starts_with(pattern)),
         };
 
-        has_gemfile |= name == "Gemfile";
-        has_config_ru |= name == "config.ru";
-
-        // Check name-based patterns; keep only if higher priority than current best.
-        for (i, (pattern, label, match_kind)) in CONFIG_PATTERNS.iter().enumerate() {
-            let matches = match match_kind {
-                ConfigMatchKind::Exact => name == *pattern,
-                ConfigMatchKind::Prefix => name.starts_with(pattern),
-            };
-
-            if matches && best.as_ref().is_none_or(|&(best_i, _)| i < best_i) {
-                if i == 0 {
-                    return Some(label); // Top priority — cannot be beaten.
-                }
-                best = Some((i, label));
-                break; // A filename matches at most one pattern.
-            }
-        }
-
-        // Check extension-based patterns (lower priority than all name patterns).
-        if best.is_none()
-            && let Some(ext) = std::path::Path::new(name).extension()
-        {
-            for (target_ext, label) in CONFIG_EXTENSIONS {
-                if *target_ext == ext {
-                    best = Some((CONFIG_PATTERNS.len(), label));
-                    break;
-                }
-            }
+        if matches {
+            return Some(label);
         }
     }
 
-    if has_gemfile
-        && has_config_ru
-        && best
-            .as_ref()
-            .is_none_or(|&(best_i, _)| rack_priority < best_i)
-    {
-        best = Some((rack_priority, "Ruby (Rack)"));
+    if exact_names.contains("Gemfile") && exact_names.contains("config.ru") {
+        return Some("Ruby (Rack)");
     }
 
-    best.map(|(_, label)| label)
+    for (target_ext, label) in CONFIG_EXTENSIONS {
+        if extensions.contains(target_ext) {
+            return Some(label);
+        }
+    }
+
+    None
 }
 
 /// Known process names mapped to their app/framework labels.

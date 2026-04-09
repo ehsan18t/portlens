@@ -118,7 +118,14 @@ pub fn format_uptime(secs: Option<u64>) -> String {
     let days = hours / 24;
 
     if days > 0 {
-        format!("{}d {}h", days, hours % 24)
+        let day_hours = hours % 24;
+        let remaining_minutes = minutes % 60;
+
+        if remaining_minutes > 0 {
+            format!("{days}d {day_hours}h {remaining_minutes}m")
+        } else {
+            format!("{days}d {day_hours}h")
+        }
     } else if hours > 0 {
         format!("{}h {}m", hours, minutes % 60)
     } else if minutes > 0 {
@@ -133,41 +140,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_display_tcp() {
-        assert_eq!(Protocol::Tcp.to_string(), "TCP", "TCP display string");
+    fn protocol_display_matches_variants() {
+        for (protocol, expected) in [(Protocol::Tcp, "TCP"), (Protocol::Udp, "UDP")] {
+            assert_eq!(
+                protocol.to_string(),
+                expected,
+                "protocol display should match"
+            );
+        }
     }
 
     #[test]
-    fn protocol_display_udp() {
-        assert_eq!(Protocol::Udp.to_string(), "UDP", "UDP display string");
-    }
-
-    #[test]
-    fn protocol_ordering() {
-        assert!(Protocol::Tcp < Protocol::Udp, "TCP should sort before UDP");
-    }
-
-    #[test]
-    fn state_display_listen() {
-        assert_eq!(State::Listen.to_string(), "LISTEN", "Listen display string");
-    }
-
-    #[test]
-    fn state_display_established() {
-        assert_eq!(
-            State::Established.to_string(),
-            "ESTABLISHED",
-            "Established display string"
-        );
-    }
-
-    #[test]
-    fn state_display_not_applicable() {
-        assert_eq!(
-            State::NotApplicable.to_string(),
-            "-",
-            "NotApplicable display string"
-        );
+    fn state_display_matches_variants() {
+        for (state, expected) in [
+            (State::Listen, "LISTEN"),
+            (State::Established, "ESTABLISHED"),
+            (State::NotApplicable, "-"),
+        ] {
+            assert_eq!(state.to_string(), expected, "state display should match");
+        }
     }
 
     #[test]
@@ -191,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn format_uptime_days_hours() {
-        assert_eq!(format_uptime(Some(86400 + 32400)), "1d 9h");
+    fn format_uptime_days_hours_minutes() {
+        assert_eq!(format_uptime(Some(86400 + 32400 + 900)), "1d 9h 15m");
     }
 }

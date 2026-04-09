@@ -183,31 +183,16 @@ mod tests {
     }
 
     #[test]
-    fn detect_node_project() {
-        let dir = setup_project("package.json");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
-        assert_eq!(result.as_deref(), Some(dir.path()));
-    }
-
-    #[test]
-    fn detect_rust_project() {
-        let dir = setup_project("Cargo.toml");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
-        assert_eq!(result.as_deref(), Some(dir.path()));
-    }
-
-    #[test]
-    fn detect_go_project() {
-        let dir = setup_project("go.mod");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
-        assert_eq!(result.as_deref(), Some(dir.path()));
-    }
-
-    #[test]
-    fn detect_python_project() {
-        let dir = setup_project("pyproject.toml");
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
-        assert_eq!(result.as_deref(), Some(dir.path()));
+    fn detect_known_project_markers() {
+        for marker in ["package.json", "Cargo.toml", "go.mod", "pyproject.toml"] {
+            let dir = setup_project(marker);
+            let result = detect_project_root(Some(dir.path()), &[] as &[&str], None);
+            assert_eq!(
+                result.as_deref(),
+                Some(dir.path()),
+                "marker {marker} should be detected"
+            );
+        }
     }
 
     #[test]
