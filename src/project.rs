@@ -34,7 +34,7 @@ const PROJECT_MARKER_EXTENSIONS: &[&str] = &["csproj", "fsproj"];
 ///
 /// Prevents excessive I/O for processes with deeply nested or unusual
 /// working directories (e.g. `/var/run/service/nested/deep/path`).
-const MAX_WALK_DEPTH: usize = 16;
+pub(crate) const MAX_WALK_DEPTH: usize = 16;
 
 /// Detect the project root path for a process.
 ///
@@ -143,31 +143,29 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// Check whether a directory contains any project marker file.
 ///
-/// Uses a single readdir call and in-memory checks instead of individual
-/// stat calls per marker, reducing I/O for directories without markers.
+/// Exact marker names are checked with direct filesystem probes first to avoid
+/// scanning large directories just to find common root files like
+/// `package.json` or `Cargo.toml`. A directory scan is only used as a fallback
+/// for extension-based markers such as `.csproj`.
 fn has_marker(dir: &Path) -> bool {
+    if PROJECT_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+    {
+        return true;
+    }
+
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
 
-    for entry in entries.filter_map(Result::ok) {
+    entries.filter_map(Result::ok).any(|entry| {
         let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-
-        if PROJECT_MARKERS.contains(&name) {
-            return true;
-        }
-
-        if let Some(ext) = std::path::Path::new(name).extension()
-            && PROJECT_MARKER_EXTENSIONS.iter().any(|m| *m == ext)
-        {
-            return true;
-        }
-    }
-
-    false
+        std::path::Path::new(file_name.as_os_str())
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|ext| PROJECT_MARKER_EXTENSIONS.contains(&ext))
+    })
 }
 
 #[cfg(test)]

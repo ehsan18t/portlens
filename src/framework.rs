@@ -3,7 +3,7 @@
 //! Identifies the technology behind a port using three strategies:
 //! Docker image name, config file detection, and process name matching.
 
-use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::docker::ContainerInfo;
@@ -95,48 +95,75 @@ const CONFIG_EXTENSIONS: &[(&str, &str)] = &[("csproj", ".NET"), ("fsproj", ".NE
 
 /// Detect app label by scanning config files in a project root.
 ///
-/// Iterates directory entries lazily and returns the highest-priority
-/// match without reading the entire directory when an early match exists.
+/// Checks direct marker paths first and only falls back to scanning the
+/// directory for prefix or extension matches when needed.
+#[must_use]
 pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
+    for (pattern, label, match_kind) in CONFIG_PATTERNS {
+        if matches_config_path(project_root, pattern, *match_kind) {
+            return Some(label);
+        }
+    }
+
+    if project_root.join("Gemfile").exists() && project_root.join("config.ru").exists() {
+        return Some("Ruby (Rack)");
+    }
+
+    detect_from_directory_scan(project_root)
+}
+
+fn matches_config_path(project_root: &Path, pattern: &str, match_kind: ConfigMatchKind) -> bool {
+    match match_kind {
+        ConfigMatchKind::Exact => project_root.join(pattern).exists(),
+        ConfigMatchKind::Prefix => COMMON_CONFIG_SUFFIXES
+            .iter()
+            .any(|suffix| project_root.join(format!("{pattern}{suffix}")).exists()),
+    }
+}
+
+fn detect_from_directory_scan(project_root: &Path) -> Option<&'static str> {
     let Ok(entries) = std::fs::read_dir(project_root) else {
         return None;
     };
 
-    let file_names: Vec<_> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+    let mut has_gemfile = false;
+    let mut has_config_ru = false;
 
-    let exact_names: HashSet<_> = file_names.iter().map(String::as_str).collect();
-    let extensions: HashSet<_> = file_names
-        .iter()
-        .filter_map(|name| std::path::Path::new(name).extension())
-        .filter_map(std::ffi::OsStr::to_str)
-        .collect();
-
-    for (pattern, label, match_kind) in CONFIG_PATTERNS {
-        let matches = match match_kind {
-            ConfigMatchKind::Exact => exact_names.contains(pattern),
-            ConfigMatchKind::Prefix => file_names.iter().any(|name| name.starts_with(pattern)),
+    for entry in entries.filter_map(Result::ok) {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
         };
 
-        if matches {
+        has_gemfile |= name == "Gemfile";
+        has_config_ru |= name == "config.ru";
+
+        for (pattern, label, match_kind) in CONFIG_PATTERNS {
+            let matches = match match_kind {
+                ConfigMatchKind::Exact => name == *pattern,
+                ConfigMatchKind::Prefix => name.starts_with(pattern),
+            };
+
+            if matches {
+                return Some(label);
+            }
+        }
+
+        if let Some(ext) = std::path::Path::new(name)
+            .extension()
+            .and_then(OsStr::to_str)
+            && let Some((_, label)) = CONFIG_EXTENSIONS
+                .iter()
+                .find(|(target_ext, _)| *target_ext == ext)
+        {
             return Some(label);
         }
     }
 
-    if exact_names.contains("Gemfile") && exact_names.contains("config.ru") {
-        return Some("Ruby (Rack)");
-    }
-
-    for (target_ext, label) in CONFIG_EXTENSIONS {
-        if extensions.contains(target_ext) {
-            return Some(label);
-        }
-    }
-
-    None
+    (has_gemfile && has_config_ru).then_some("Ruby (Rack)")
 }
+
+const COMMON_CONFIG_SUFFIXES: &[&str] = &["", ".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"];
 
 /// Known process names mapped to their app/framework labels.
 ///

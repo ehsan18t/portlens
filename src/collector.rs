@@ -539,13 +539,32 @@ fn lookup_cached_project_root(
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(cached) = cache.get(start) {
-        return cached.clone();
+    let visited: Vec<_> = traversed_project_paths(start, home)
+        .map(Path::to_path_buf)
+        .collect();
+
+    if let Some(cached) = visited.iter().find_map(|path| cache.get(path).cloned()) {
+        for path in visited {
+            cache.insert(path, cached.clone());
+        }
+        return cached;
     }
 
     let result = project::find_from_dir(start, home);
-    cache.insert(start.to_path_buf(), result.clone());
+    for path in visited {
+        cache.insert(path, result.clone());
+    }
     result
+}
+
+fn traversed_project_paths<'a>(
+    start: &'a Path,
+    home: Option<&'a Path>,
+) -> impl Iterator<Item = &'a Path> {
+    start
+        .ancestors()
+        .take(project::MAX_WALK_DEPTH)
+        .take_while(move |path| home != Some(*path))
 }
 
 /// Deduplicate entries that share the same user-visible logical socket.
@@ -683,6 +702,8 @@ fn process_refresh_kind() -> ProcessRefreshKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     fn make_entry(port: u16, proto: Protocol) -> PortEntry {
         PortEntry {
@@ -863,5 +884,41 @@ mod tests {
         assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
         assert!(is_docker_proxy_process("vpnkit"));
         assert!(!is_docker_proxy_process("nginx"));
+    }
+
+    #[test]
+    fn project_root_cache_learns_visited_ancestors() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("Cargo.toml"), "").unwrap();
+
+        let first = root.path().join("src").join("db");
+        let second = root.path().join("src").join("utils");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+
+        let mut cache = HashMap::new();
+
+        let first_result = lookup_cached_project_root(&first, &mut cache, None);
+        assert_eq!(first_result.as_deref(), Some(root.path()));
+        assert_eq!(
+            cache.get(first.as_path()).and_then(Option::as_deref),
+            Some(root.path()),
+            "the original cwd should be cached"
+        );
+        assert_eq!(
+            cache
+                .get(first.parent().unwrap())
+                .and_then(Option::as_deref),
+            Some(root.path()),
+            "visited ancestors should also be cached"
+        );
+
+        let second_result = lookup_cached_project_root(&second, &mut cache, None);
+        assert_eq!(second_result.as_deref(), Some(root.path()));
+        assert_eq!(
+            cache.get(second.as_path()).and_then(Option::as_deref),
+            Some(root.path()),
+            "sibling directories should learn from the cached ancestor"
+        );
     }
 }
