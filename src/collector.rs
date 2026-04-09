@@ -32,6 +32,10 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
 
     let mut sys = System::new();
+    // `false` = do not remove previously-tracked dead processes. On a
+    // freshly created System the internal map is empty, so this flag
+    // has no effect either way. Passing `false` avoids the slightly
+    // more expensive "clean up stale entries" pass.
     sys.refresh_processes_specifics(ProcessesToUpdate::All, false, process_refresh_kind());
 
     let users = Users::new_with_refreshed_list();
