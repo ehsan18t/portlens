@@ -550,6 +550,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "criterion",
+ "libc",
  "listeners",
  "serde",
  "serde_json",
