@@ -90,7 +90,8 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
     let mut best: Option<(usize, &'static str)> = None;
 
     for entry in entries.filter_map(Result::ok) {
-        let Some(name) = entry.file_name().to_str().map(String::from) else {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
             continue;
         };
 
@@ -107,7 +108,7 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
 
         // Check extension-based patterns (lower priority than all name patterns).
         if best.is_none()
-            && let Some(ext) = std::path::Path::new(&name).extension()
+            && let Some(ext) = std::path::Path::new(name).extension()
         {
             let ext_str = ext.to_string_lossy();
             for (target_ext, label) in CONFIG_EXTENSIONS {

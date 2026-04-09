@@ -85,15 +85,16 @@ fn has_marker(dir: &Path) -> bool {
     };
 
     for entry in entries.filter_map(Result::ok) {
-        let Some(name) = entry.file_name().to_str().map(String::from) else {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
             continue;
         };
 
-        if PROJECT_MARKERS.iter().any(|m| *m == name) {
+        if PROJECT_MARKERS.contains(&name) {
             return true;
         }
 
-        if let Some(ext) = std::path::Path::new(&name).extension() {
+        if let Some(ext) = std::path::Path::new(name).extension() {
             let ext_str = ext.to_string_lossy();
             if PROJECT_MARKER_EXTENSIONS
                 .iter()
