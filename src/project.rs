@@ -58,19 +58,20 @@ pub fn detect_project_root(
         return Some(root);
     }
 
-    if let Some(parent) = first_absolute_cmd_parent(cmd)
-        && let Some(root) = find_from_dir(parent, home)
-    {
-        return Some(root);
+    for parent in absolute_cmd_parents(cmd) {
+        if let Some(root) = find_from_dir(parent, home) {
+            return Some(root);
+        }
     }
 
     None
 }
 
-/// Return the parent directory of the first absolute path found in `cmd`.
-#[must_use]
-pub(crate) fn first_absolute_cmd_parent<S: AsRef<OsStr>>(cmd: &[S]) -> Option<&Path> {
-    cmd.iter().find_map(|arg| {
+/// Return the parent directories of the absolute paths found in `cmd`.
+pub(crate) fn absolute_cmd_parents<'a, S: AsRef<OsStr> + 'a>(
+    cmd: &'a [S],
+) -> impl Iterator<Item = &'a Path> + 'a {
+    cmd.iter().filter_map(|arg| {
         let path = Path::new(arg.as_ref());
         path.is_absolute().then(|| path.parent()).flatten()
     })
@@ -147,7 +148,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// scanning large directories just to find common root files like
 /// `package.json` or `Cargo.toml`. A directory scan is only used as a fallback
 /// for extension-based markers such as `.csproj`.
-fn has_marker(dir: &Path) -> bool {
+pub(crate) fn has_marker(dir: &Path) -> bool {
     if PROJECT_MARKERS
         .iter()
         .any(|marker| dir.join(marker).exists())
@@ -232,6 +233,27 @@ mod tests {
         let cmd = vec![fake_path.to_string_lossy().into_owned()];
         let result = detect_project_root(None, &cmd, None);
         assert_eq!(result.as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn detect_fallback_scans_all_absolute_cmd_args() {
+        let project = setup_project("Cargo.toml");
+        let script_path = project.path().join("src").join("main.rs");
+        fs::create_dir_all(script_path.parent().unwrap()).unwrap();
+        fs::write(&script_path, "").unwrap();
+
+        let interpreter_root = TempDir::new().unwrap();
+        let interpreter_path = interpreter_root.path().join("bin").join("python.exe");
+        fs::create_dir_all(interpreter_path.parent().unwrap()).unwrap();
+        fs::write(&interpreter_path, "").unwrap();
+
+        let cmd = vec![
+            interpreter_path.to_string_lossy().into_owned(),
+            script_path.to_string_lossy().into_owned(),
+        ];
+
+        let result = detect_project_root(None, &cmd, None);
+        assert_eq!(result.as_deref(), Some(project.path()));
     }
 
     #[test]

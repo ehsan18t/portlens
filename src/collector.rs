@@ -543,8 +543,13 @@ fn lookup_project_root(
         return Some(root);
     }
 
-    project::first_absolute_cmd_parent(cmd)
-        .and_then(|cmd_path| lookup_cached_project_root(cmd_path, cache, home))
+    for cmd_path in project::absolute_cmd_parents(cmd) {
+        if let Some(root) = lookup_cached_project_root(cmd_path, cache, home) {
+            return Some(root);
+        }
+    }
+
+    None
 }
 
 fn lookup_cached_project_root(
@@ -552,32 +557,43 @@ fn lookup_cached_project_root(
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&Path>,
 ) -> Option<PathBuf> {
-    let visited: Vec<_> = traversed_project_paths(start, home)
-        .map(Path::to_path_buf)
-        .collect();
+    let mut current = start.to_path_buf();
+    let mut visited = Vec::new();
 
-    if let Some(cached) = visited.iter().find_map(|path| cache.get(path).cloned()) {
-        for path in visited {
-            cache.insert(path, cached.clone());
+    for _ in 0..project::MAX_WALK_DEPTH {
+        if let Some(h) = home
+            && current == h
+        {
+            break;
         }
-        return cached;
+
+        if let Some(cached) = cache.get(&current).cloned() {
+            for path in visited {
+                cache.insert(path, cached.clone());
+            }
+            return cached;
+        }
+
+        visited.push(current.clone());
+
+        if project::has_marker(&current) {
+            let result = Some(current.clone());
+            for path in visited {
+                cache.insert(path, result.clone());
+            }
+            return result;
+        }
+
+        if !current.pop() {
+            break;
+        }
     }
 
-    let result = project::find_from_dir(start, home);
     for path in visited {
-        cache.insert(path, result.clone());
+        cache.insert(path, None);
     }
-    result
-}
 
-fn traversed_project_paths<'a>(
-    start: &'a Path,
-    home: Option<&'a Path>,
-) -> impl Iterator<Item = &'a Path> {
-    start
-        .ancestors()
-        .take(project::MAX_WALK_DEPTH)
-        .take_while(move |path| home != Some(*path))
+    None
 }
 
 /// Deduplicate entries that share the same user-visible logical socket.
@@ -1005,6 +1021,34 @@ mod tests {
             cache.get(second.as_path()).and_then(Option::as_deref),
             Some(root.path()),
             "sibling directories should learn from the cached ancestor"
+        );
+    }
+
+    #[test]
+    fn project_root_cache_does_not_poison_unrelated_ancestors() {
+        let workspace = TempDir::new().unwrap();
+        let outer = workspace.path().join("workspace");
+        let project_root = outer.join("app");
+        let inside = project_root.join("src").join("db");
+        let unrelated = outer.join("services").join("worker");
+
+        fs::create_dir_all(&inside).unwrap();
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(project_root.join("Cargo.toml"), "").unwrap();
+
+        let mut cache = HashMap::new();
+
+        let first_result = lookup_cached_project_root(&inside, &mut cache, None);
+        assert_eq!(first_result.as_deref(), Some(project_root.as_path()));
+        assert!(
+            !cache.contains_key(outer.as_path()),
+            "ancestors above the discovered project root must not be cached as project hits"
+        );
+
+        let unrelated_result = lookup_cached_project_root(&unrelated, &mut cache, None);
+        assert!(
+            unrelated_result.is_none(),
+            "an unrelated path under the same ancestor must not inherit another project's root"
         );
     }
 }
