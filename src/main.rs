@@ -70,7 +70,7 @@ fn run() -> Result<()> {
 
     let entries = collector::collect()?;
     let filtered = filter::apply(
-        &entries,
+        entries,
         &filter::FilterOptions {
             tcp_only: cli.tcp,
             udp_only: cli.udp,

@@ -100,14 +100,15 @@ fn is_relevant(entry: &PortEntry) -> bool {
     RELEVANT_PROCESSES.contains(&lower.as_str())
 }
 
-/// Apply the given filter options to a slice of entries.
+/// Apply the given filter options to a collection of entries.
 ///
+/// Takes ownership of the input to avoid cloning every surviving entry.
 /// Returns a new `Vec` containing only the entries that match all active
 /// filters. Filters are combined with AND semantics.
 #[must_use]
-pub fn apply(entries: &[PortEntry], opts: &FilterOptions) -> Vec<PortEntry> {
+pub fn apply(entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
     entries
-        .iter()
+        .into_iter()
         .filter(|e| {
             if opts.tcp_only && e.proto != Protocol::Tcp {
                 return false;
@@ -128,7 +129,6 @@ pub fn apply(entries: &[PortEntry], opts: &FilterOptions) -> Vec<PortEntry> {
             }
             true
         })
-        .cloned()
         .collect()
 }
 
@@ -164,7 +164,7 @@ mod tests {
             port: None,
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(result.len(), 2, "no filters should pass all entries");
     }
 
@@ -181,7 +181,7 @@ mod tests {
             port: None,
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(result.len(), 1, "tcp_only should exclude UDP entries");
         assert_eq!(result[0].proto, Protocol::Tcp);
     }
@@ -199,7 +199,7 @@ mod tests {
             port: Some(443),
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(
             result.len(),
             1,
@@ -225,7 +225,7 @@ mod tests {
             port: None,
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(
             result.len(),
             2,
@@ -251,7 +251,7 @@ mod tests {
             port: None,
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(result.len(), 2, "udp_only should exclude TCP entries");
         assert!(
             result.iter().all(|e| e.proto == Protocol::Udp),
@@ -273,7 +273,7 @@ mod tests {
             port: Some(80),
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(
             result.len(),
             1,
@@ -296,7 +296,7 @@ mod tests {
             port: Some(9999),
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert!(result.is_empty(), "non-matching port should return empty");
     }
 
@@ -310,7 +310,7 @@ mod tests {
             port: None,
             show_all: true,
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert!(result.is_empty(), "empty input should return empty output");
     }
 
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn relevance_filter_hides_unknown_process() {
         let entries = vec![make_entry(12345, Protocol::Tcp, State::Listen)];
-        let result = apply(&entries, &default_filter());
+        let result = apply(entries, &default_filter());
         assert!(
             result.is_empty(),
             "unknown process 'test' should be filtered out"
@@ -338,7 +338,7 @@ mod tests {
     fn relevance_filter_keeps_known_process() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "node".to_string();
-        let result = apply(&[entry], &default_filter());
+        let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "known process 'node' should pass");
     }
 
@@ -346,7 +346,7 @@ mod tests {
     fn relevance_filter_keeps_entry_with_project() {
         let mut entry = make_entry(8080, Protocol::Tcp, State::Listen);
         entry.project = Some("my-app".to_string());
-        let result = apply(&[entry], &default_filter());
+        let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with project should pass");
     }
 
@@ -354,7 +354,7 @@ mod tests {
     fn relevance_filter_keeps_entry_with_app() {
         let mut entry = make_entry(5432, Protocol::Tcp, State::Listen);
         entry.app = Some("PostgreSQL".to_string());
-        let result = apply(&[entry], &default_filter());
+        let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app label should pass");
     }
 
@@ -365,7 +365,7 @@ mod tests {
             show_all: true,
             ..default_filter()
         };
-        let result = apply(&entries, &opts);
+        let result = apply(entries, &opts);
         assert_eq!(result.len(), 1, "show_all should bypass relevance filter");
     }
 
@@ -373,7 +373,7 @@ mod tests {
     fn relevance_filter_windows_exe_suffix() {
         let mut entry = make_entry(80, Protocol::Tcp, State::Listen);
         entry.process = "nginx.exe".to_string();
-        let result = apply(&[entry], &default_filter());
+        let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "nginx.exe should be recognized");
     }
 
@@ -381,7 +381,7 @@ mod tests {
     fn relevance_filter_case_insensitive() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "Python".to_string();
-        let result = apply(&[entry], &default_filter());
+        let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "capitalized 'Python' should match");
     }
 }

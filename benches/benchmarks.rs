@@ -41,7 +41,7 @@ fn bench_filter(c: &mut Criterion) {
     c.bench_function("filter_tcp_only_500", |b| {
         b.iter(|| {
             filter::apply(
-                &entries,
+                entries.clone(),
                 &FilterOptions {
                     tcp_only: true,
                     udp_only: false,
