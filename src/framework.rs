@@ -31,11 +31,14 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         s if s.starts_with("clickhouse") => Some("ClickHouse"),
         s if s.starts_with("caddy") => Some("Caddy"),
         s if s.starts_with("traefik") => Some("Traefik"),
-        s if s.starts_with("node") => Some("Node.js"),
+        // Exact match to avoid false positives (e.g. "node-exporter").
+        "node" => Some("Node.js"),
         s if s.starts_with("python") => Some("Python"),
         s if s.starts_with("ruby") => Some("Ruby"),
-        s if s.starts_with("golang") || s == "go" => Some("Go"),
-        s if s.starts_with("rust") => Some("Rust"),
+        // Exact match to avoid false positives (e.g. "golang-migrate").
+        "golang" | "go" => Some("Go"),
+        // Exact match to avoid false positives (e.g. "rust-analyzer").
+        "rust" => Some("Rust"),
         s if s.starts_with("openjdk") || s.starts_with("eclipse-temurin") => Some("Java"),
         s if s.starts_with("dotnet") => Some(".NET"),
         _ => None,
@@ -187,6 +190,19 @@ mod tests {
             image: "my-custom-app:latest".to_string(),
         };
         assert_eq!(detect_from_image(&info), None);
+    }
+
+    #[test]
+    fn image_node_exporter_not_nodejs() {
+        let info = ContainerInfo {
+            name: "metrics".to_string(),
+            image: "prom/node-exporter:latest".to_string(),
+        };
+        assert_eq!(
+            detect_from_image(&info),
+            None,
+            "node-exporter should not match Node.js"
+        );
     }
 
     #[test]
