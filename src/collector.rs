@@ -6,15 +6,23 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
+use std::ffi::CStr;
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(unix)]
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::{ffi::c_void, ptr};
 
 #[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::docker::{self, ContainerPortMap};
 use crate::types::{PortEntry, Protocol, State};
@@ -22,9 +30,92 @@ use crate::{framework, project};
 
 type TcpStateIndex = HashMap<SocketAddr, State>;
 
+#[derive(Default)]
+struct UserResolver {
+    #[cfg(unix)]
+    names_by_uid: HashMap<libc::uid_t, String>,
+    #[cfg(windows)]
+    names_by_pid: HashMap<u32, String>,
+}
+
+#[cfg(windows)]
+type RawHandle = *mut c_void;
+
+#[cfg(windows)]
+type RawSid = *mut c_void;
+
+#[cfg(windows)]
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+#[cfg(windows)]
+const TOKEN_QUERY: u32 = 0x0008;
+
+#[cfg(windows)]
+const TOKEN_USER_CLASS: u32 = 1;
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SidAndAttributes {
+    sid: RawSid,
+    attributes: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TokenUser {
+    user: SidAndAttributes,
+}
+
+#[cfg(windows)]
+struct OwnedHandle(RawHandle);
+
+#[cfg(windows)]
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> RawHandle;
+    fn CloseHandle(object: RawHandle) -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(
+        process_handle: RawHandle,
+        desired_access: u32,
+        token_handle: *mut RawHandle,
+    ) -> i32;
+    fn GetTokenInformation(
+        token_handle: RawHandle,
+        token_information_class: u32,
+        token_information: *mut c_void,
+        token_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+    fn LookupAccountSidW(
+        system_name: *const u16,
+        sid: RawSid,
+        name: *mut u16,
+        name_len: *mut u32,
+        domain_name: *mut u16,
+        domain_len: *mut u32,
+        sid_name_use: *mut u32,
+    ) -> i32;
+}
+
 struct CollectContext<'a> {
     sys: &'a System,
-    users: &'a Users,
+    user_resolver: &'a mut UserResolver,
     container_map: &'a ContainerPortMap,
     tcp_states: &'a TcpStateIndex,
     now_epoch: u64,
@@ -69,7 +160,7 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         );
     }
 
-    let users = Users::new_with_refreshed_list();
+    let mut user_resolver = UserResolver::default();
 
     // Block on Docker results only after all other I/O is done.
     let container_map = docker::await_detection(docker_handle);
@@ -87,7 +178,7 @@ pub fn collect() -> Result<Vec<PortEntry>> {
     let home = project::home_dir();
     let mut context = CollectContext {
         sys: &sys,
-        users: &users,
+        user_resolver: &mut user_resolver,
         container_map: &container_map,
         tcp_states: &tcp_states,
         now_epoch,
@@ -132,7 +223,7 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
-    let user = resolve_user(sysinfo_process, context.users);
+    let user = resolve_user(sysinfo_process, l.process.pid, context.user_resolver);
 
     // Docker container lookup
     let container = lookup_container(context.container_map, l.socket, proto, &l.process.name);
@@ -770,7 +861,12 @@ fn enrichment_score(e: &PortEntry) -> u8 {
 /// Resolve the owning username for an already-looked-up process.
 ///
 /// Returns `"-"` if the process or user cannot be determined.
-fn resolve_user(process: Option<&sysinfo::Process>, users: &Users) -> String {
+#[cfg(unix)]
+fn resolve_user(
+    process: Option<&sysinfo::Process>,
+    _pid: u32,
+    resolver: &mut UserResolver,
+) -> String {
     let Some(proc_ref) = process else {
         return "-".to_string();
     };
@@ -779,9 +875,188 @@ fn resolve_user(process: Option<&sysinfo::Process>, users: &Users) -> String {
         return "-".to_string();
     };
 
-    users
-        .get_user_by_id(uid)
-        .map_or_else(|| "-".to_string(), |u| u.name().to_string())
+    let uid = *uid.deref();
+    if let Some(cached) = resolver.names_by_uid.get(&uid) {
+        return cached.clone();
+    }
+
+    let name = lookup_unix_username(uid).unwrap_or_else(|| "-".to_string());
+    resolver.names_by_uid.insert(uid, name.clone());
+    name
+}
+
+#[cfg(unix)]
+fn lookup_unix_username(uid: libc::uid_t) -> Option<String> {
+    let mut buffer_len = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        suggested if suggested > 0 => usize::try_from(suggested).ok()?,
+        _ => 1024,
+    };
+
+    loop {
+        let mut password = MaybeUninit::<libc::passwd>::uninit();
+        let mut buffer = vec![0_u8; buffer_len];
+        let mut result = std::ptr::null_mut();
+
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                password.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+
+            let password = unsafe { password.assume_init() };
+            if password.pw_name.is_null() {
+                return None;
+            }
+
+            let name = unsafe { CStr::from_ptr(password.pw_name) }
+                .to_str()
+                .ok()?
+                .to_string();
+            return Some(name);
+        }
+
+        if status != libc::ERANGE {
+            return None;
+        }
+
+        buffer_len = buffer_len.saturating_mul(2);
+        if buffer_len > 1024 * 1024 {
+            return None;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resolve_user(
+    _process: Option<&sysinfo::Process>,
+    pid: u32,
+    resolver: &mut UserResolver,
+) -> String {
+    if let Some(cached) = resolver.names_by_pid.get(&pid) {
+        return cached.clone();
+    }
+
+    let name = lookup_windows_username(pid).unwrap_or_else(|| "-".to_string());
+    resolver.names_by_pid.insert(pid, name.clone());
+    name
+}
+
+#[cfg(windows)]
+fn lookup_windows_username(pid: u32) -> Option<String> {
+    let process = open_process_for_query(pid)?;
+    let token = open_process_token(process.0)?;
+    let token_user = read_token_user(token.0)?;
+    let token_user = unsafe { std::ptr::read_unaligned(token_user.as_ptr().cast::<TokenUser>()) };
+    lookup_account_name(token_user.user.sid)
+}
+
+#[cfg(windows)]
+fn open_process_for_query(pid: u32) -> Option<OwnedHandle> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    (!handle.is_null()).then_some(OwnedHandle(handle))
+}
+
+#[cfg(windows)]
+fn open_process_token(process: RawHandle) -> Option<OwnedHandle> {
+    let mut token = ptr::null_mut();
+    let success = unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) };
+    (success != 0 && !token.is_null()).then_some(OwnedHandle(token))
+}
+
+#[cfg(windows)]
+fn read_token_user(token: RawHandle) -> Option<Vec<u8>> {
+    let mut required_len = 0;
+    unsafe {
+        let _ = GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            ptr::null_mut(),
+            0,
+            &raw mut required_len,
+        );
+    }
+    if required_len == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0_u8; required_len as usize];
+    let success = unsafe {
+        GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            buffer.as_mut_ptr().cast(),
+            required_len,
+            &raw mut required_len,
+        )
+    };
+    (success != 0).then_some(buffer)
+}
+
+#[cfg(windows)]
+fn lookup_account_name(sid: RawSid) -> Option<String> {
+    let mut name_len = 0;
+    let mut domain_len = 0;
+    let mut sid_name_use = 0;
+
+    unsafe {
+        let _ = LookupAccountSidW(
+            ptr::null(),
+            sid,
+            ptr::null_mut(),
+            &raw mut name_len,
+            ptr::null_mut(),
+            &raw mut domain_len,
+            &raw mut sid_name_use,
+        );
+    }
+    if name_len == 0 {
+        return None;
+    }
+
+    let mut name = vec![0_u16; name_len as usize];
+    let success = unsafe {
+        LookupAccountSidW(
+            ptr::null(),
+            sid,
+            name.as_mut_ptr(),
+            &raw mut name_len,
+            ptr::null_mut(),
+            &raw mut domain_len,
+            &raw mut sid_name_use,
+        )
+    };
+    if success == 0 {
+        return None;
+    }
+
+    Some(wide_buffer_to_string(&name))
+}
+
+#[cfg(windows)]
+fn wide_buffer_to_string(buffer: &[u16]) -> String {
+    let end = buffer
+        .iter()
+        .position(|&value| value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..end])
+}
+
+#[cfg(not(any(unix, windows)))]
+fn resolve_user(
+    _process: Option<&sysinfo::Process>,
+    _pid: u32,
+    _resolver: &mut UserResolver,
+) -> String {
+    "-".to_string()
 }
 
 /// Refresh kind for process metadata needed by enrichment.
