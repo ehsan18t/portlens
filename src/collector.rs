@@ -61,17 +61,12 @@ fn build_entry(
         Protocol::Udp => State::NotApplicable,
     };
 
-    let proto_str = match proto {
-        Protocol::Tcp => "tcp",
-        Protocol::Udp => "udp",
-    };
-
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = sys.process(sysinfo_pid);
     let user = resolve_user(sysinfo_process, users);
 
     // Docker container lookup
-    let container = container_map.get(&(l.socket.port(), proto_str.to_string()));
+    let container = container_map.get(&(l.socket.port(), proto));
 
     // Project detection: use container name for Docker ports, otherwise walk cwd
     let (project_name, project_root) = container.map_or_else(

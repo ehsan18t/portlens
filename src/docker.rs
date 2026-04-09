@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
+use crate::types::Protocol;
+
 /// Metadata about a running container that has published ports.
 #[derive(Debug, Clone)]
 pub struct ContainerInfo {
@@ -19,7 +21,7 @@ pub struct ContainerInfo {
 }
 
 /// Maps `(host_port, protocol)` to container info.
-pub type ContainerPortMap = HashMap<(u16, String), ContainerInfo>;
+pub type ContainerPortMap = HashMap<(u16, Protocol), ContainerInfo>;
 
 /// Detect running Docker/Podman containers and their published ports.
 ///
@@ -76,7 +78,10 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
             let Ok(public_port) = u16::try_from(public_port) else {
                 continue;
             };
-            let proto = port["Type"].as_str().unwrap_or("tcp").to_string();
+            let proto = match port["Type"].as_str().unwrap_or("tcp") {
+                "udp" => Protocol::Udp,
+                _ => Protocol::Tcp,
+            };
 
             map.insert(
                 (public_port, proto),
@@ -157,6 +162,8 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
 mod tests {
     use super::*;
 
+    use crate::types::Protocol;
+
     const SAMPLE_RESPONSE: &str = r#"[
         {
             "Names": ["/backend-postgres-1"],
@@ -184,11 +191,11 @@ mod tests {
         let map = parse_containers_json(SAMPLE_RESPONSE);
         assert_eq!(map.len(), 2);
 
-        let pg = map.get(&(5432, "tcp".to_string())).unwrap();
+        let pg = map.get(&(5432, Protocol::Tcp)).unwrap();
         assert_eq!(pg.name, "backend-postgres-1");
         assert_eq!(pg.image, "postgres:16");
 
-        let redis = map.get(&(6379, "tcp".to_string())).unwrap();
+        let redis = map.get(&(6379, Protocol::Tcp)).unwrap();
         assert_eq!(redis.name, "backend-redis-1");
         assert_eq!(redis.image, "redis:7-alpine");
     }
@@ -227,7 +234,7 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(80, "tcp".to_string())).unwrap();
+        let info = map.get(&(80, Protocol::Tcp)).unwrap();
         assert_eq!(info.name, "my-container");
     }
 
@@ -243,8 +250,8 @@ mod tests {
         }]"#;
         let map = parse_containers_json(json);
         assert_eq!(map.len(), 2);
-        assert!(map.contains_key(&(8080, "tcp".to_string())));
-        assert!(map.contains_key(&(8443, "tcp".to_string())));
+        assert!(map.contains_key(&(8080, Protocol::Tcp)));
+        assert!(map.contains_key(&(8443, Protocol::Tcp)));
     }
 
     #[test]

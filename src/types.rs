@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Protocol type for a socket entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Protocol {
     /// Transmission Control Protocol.
     Tcp,
