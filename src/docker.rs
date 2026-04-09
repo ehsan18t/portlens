@@ -23,13 +23,29 @@ pub struct ContainerInfo {
 /// Maps `(host_port, protocol)` to container info.
 pub type ContainerPortMap = HashMap<(u16, Protocol), ContainerInfo>;
 
+/// Maximum time to wait for the Docker/Podman daemon to respond.
+///
+/// On Unix the socket itself has a per-read timeout, but on Windows the
+/// named pipe has no built-in timeout support. A thread-level timeout
+/// covers both platforms uniformly.
+const DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Detect running Docker/Podman containers and their published ports.
 ///
-/// Returns an empty map if the Docker/Podman daemon is unavailable.
+/// Returns an empty map if the Docker/Podman daemon is unavailable or
+/// does not respond within [`DAEMON_TIMEOUT`].
 /// Never returns an error - this is best-effort enrichment.
 #[must_use]
 pub fn detect_containers() -> ContainerPortMap {
-    query_daemon().unwrap_or_default()
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // Ignore send error: receiver may have timed out and been dropped.
+        drop(tx.send(query_daemon()));
+    });
+    rx.recv_timeout(DAEMON_TIMEOUT)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 fn query_daemon() -> Option<ContainerPortMap> {
