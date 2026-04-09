@@ -9,7 +9,27 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
+use serde::Deserialize;
+
 use crate::types::Protocol;
+
+#[derive(Deserialize)]
+struct DockerPort<'a> {
+    #[serde(rename = "PublicPort")]
+    public_port: Option<u16>,
+    #[serde(rename = "Type")]
+    proto: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct DockerContainer<'a> {
+    #[serde(rename = "Names")]
+    names: Option<Vec<&'a str>>,
+    #[serde(rename = "Image")]
+    image: Option<&'a str>,
+    #[serde(rename = "Ports")]
+    ports: Option<Vec<DockerPort<'a>>>,
+}
 
 /// Metadata about a running container that has published ports.
 #[derive(Debug, Clone)]
@@ -76,44 +96,34 @@ fn query_daemon() -> Option<ContainerPortMap> {
 ///
 /// Each container may publish multiple ports. The map keys are
 /// `(public_port, protocol)` tuples.
+#[must_use]
 pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
     let mut map = ContainerPortMap::new();
 
-    let Ok(containers) = serde_json::from_str::<serde_json::Value>(json_body) else {
-        return map;
-    };
-
-    let Some(containers) = containers.as_array() else {
+    let Ok(containers) = serde_json::from_str::<Vec<DockerContainer<'_>>>(json_body) else {
         return map;
     };
 
     for container in containers {
-        let name = container["Names"]
-            .as_array()
-            .and_then(|names| names.first())
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim_start_matches('/')
-            .to_string();
-
-        let image = container["Image"].as_str().unwrap_or("").to_string();
+        let Some(name) = container.names.and_then(|names| names.into_iter().next()) else {
+            continue;
+        };
+        let name = name.trim_start_matches('/').to_string();
+        let image = container.image.unwrap_or("").to_string();
 
         if name.is_empty() {
             continue;
         }
 
-        let Some(ports) = container["Ports"].as_array() else {
+        let Some(ports) = container.ports else {
             continue;
         };
 
         for port in ports {
-            let Some(public_port) = port["PublicPort"].as_u64() else {
+            let Some(public_port) = port.public_port else {
                 continue;
             };
-            let Ok(public_port) = u16::try_from(public_port) else {
-                continue;
-            };
-            let proto = match port["Type"].as_str().unwrap_or("tcp") {
+            let proto = match port.proto.unwrap_or("tcp") {
                 "udp" => Protocol::Udp,
                 _ => Protocol::Tcp,
             };
@@ -311,6 +321,20 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert!(map.contains_key(&(8080, Protocol::Tcp)));
         assert!(map.contains_key(&(8443, Protocol::Tcp)));
+    }
+
+    #[test]
+    fn parse_missing_protocol_defaults_to_tcp() {
+        let json = r#"[{
+            "Names": ["/web"],
+            "Image": "nginx:latest",
+            "Ports": [{"PrivatePort": 80, "PublicPort": 8080}]
+        }]"#;
+        let map = parse_containers_json(json);
+        assert!(
+            map.contains_key(&(8080, Protocol::Tcp)),
+            "missing Type should default to TCP"
+        );
     }
 
     #[test]
