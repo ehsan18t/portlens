@@ -141,8 +141,10 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
         "php" => Some("PHP"),
         "perl" => Some("Perl"),
         "cargo" | "rustc" => Some("Rust"),
-        "erlang" => Some("Erlang"),
+        "erlang" | "beam.smp" => Some("Erlang"),
         "elixir" => Some("Elixir"),
+        "dart" => Some("Dart"),
+        "swift" => Some("Swift"),
         // Databases
         "postgres" | "postgresql" => Some("PostgreSQL"),
         "mysqld" | "mysql" => Some("MySQL"),
@@ -160,6 +162,8 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
         "traefik" => Some("Traefik"),
         "envoy" => Some("Envoy"),
         "haproxy" => Some("HAProxy"),
+        "gunicorn" => Some("Gunicorn"),
+        "uvicorn" => Some("Uvicorn"),
         // Search/messaging
         "elasticsearch" => Some("Elasticsearch"),
         "opensearch" => Some("OpenSearch"),
@@ -172,6 +176,10 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
         "nuxt" => Some("Nuxt"),
         "hugo" => Some("Hugo"),
         "jekyll" => Some("Jekyll"),
+        "flask" => Some("Flask"),
+        "rails" => Some("Rails"),
+        "gradle" => Some("Java (Gradle)"),
+        "mvn" => Some("Java (Maven)"),
         _ => None,
     }
 }

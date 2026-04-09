@@ -39,6 +39,9 @@ const RELEVANT_PROCESSES: &[&str] = &[
     "rustc",
     "erlang",
     "elixir",
+    "beam.smp",
+    "dart",
+    "swift",
     // Databases
     "postgres",
     "postgresql",
@@ -55,7 +58,7 @@ const RELEVANT_PROCESSES: &[&str] = &[
     "memcached",
     "clickhouse-server",
     "cockroach",
-    // Web servers
+    // Web servers / app servers
     "nginx",
     "apache2",
     "httpd",
@@ -63,18 +66,24 @@ const RELEVANT_PROCESSES: &[&str] = &[
     "traefik",
     "envoy",
     "haproxy",
+    "gunicorn",
+    "uvicorn",
     // Search/messaging
     "elasticsearch",
     "opensearch",
     "rabbitmq-server",
     "kafka",
-    // Dev tools
+    // Dev tools / frameworks
     "webpack",
     "vite",
     "next-server",
     "nuxt",
     "hugo",
     "jekyll",
+    "flask",
+    "rails",
+    "gradle",
+    "mvn",
 ];
 
 /// Check whether a port entry is considered developer-relevant.
