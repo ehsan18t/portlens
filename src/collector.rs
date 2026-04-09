@@ -66,10 +66,9 @@ fn build_entry(
         Protocol::Udp => "udp",
     };
 
-    let user = resolve_user(l.process.pid, sys, users);
-
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = sys.process(sysinfo_pid);
+    let user = resolve_user(sysinfo_process, users);
 
     // Docker container lookup
     let container = container_map.get(&(l.socket.port(), proto_str.to_string()));
@@ -122,17 +121,15 @@ fn build_entry(
     }
 }
 
-/// Resolve the owning username for a given PID via sysinfo.
+/// Resolve the owning username for an already-looked-up process.
 ///
-/// Returns `"-"` if the user cannot be determined.
-fn resolve_user(pid: u32, sys: &System, users: &Users) -> String {
-    let sysinfo_pid = sysinfo::Pid::from_u32(pid);
-
-    let Some(process) = sys.process(sysinfo_pid) else {
+/// Returns `"-"` if the process or user cannot be determined.
+fn resolve_user(process: Option<&sysinfo::Process>, users: &Users) -> String {
+    let Some(proc_ref) = process else {
         return "-".to_string();
     };
 
-    let Some(uid) = process.user_id() else {
+    let Some(uid) = proc_ref.user_id() else {
         return "-".to_string();
     };
 
