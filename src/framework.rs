@@ -60,8 +60,6 @@ const CONFIG_PATTERNS: &[(&str, &str)] = &[
     ("vue.config", "Vue CLI"),
     ("webpack.config", "Webpack"),
     ("manage.py", "Django"),
-    ("wsgi.py", "Flask"),
-    ("app.py", "Flask"),
     ("Cargo.toml", "Rust"),
     ("go.mod", "Go"),
     ("pom.xml", "Java (Maven)"),
