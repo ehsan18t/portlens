@@ -48,7 +48,16 @@ pub fn collect() -> Result<Vec<PortEntry>> {
 
     let all_entries: Vec<PortEntry> = raw_listeners
         .into_iter()
-        .map(|l| build_entry(&l, &sys, &users, &container_map, now_epoch, &mut project_cache))
+        .map(|l| {
+            build_entry(
+                &l,
+                &sys,
+                &users,
+                &container_map,
+                now_epoch,
+                &mut project_cache,
+            )
+        })
         .collect();
 
     let mut entries = deduplicate(all_entries);

@@ -53,8 +53,8 @@ pub fn start_detection() -> DetectionHandle {
 
 /// Wait for Docker/Podman detection to complete.
 ///
-/// Blocks for at most [`DAEMON_TIMEOUT`] (3 seconds) before returning
-/// an empty map. Never returns an error -- this is best-effort enrichment.
+/// Blocks for at most 3 seconds before returning an empty map.
+/// Never returns an error -- this is best-effort enrichment.
 // The handle is a `Receiver` which must be consumed (moved) to
 // read from it; passing by reference is not possible.
 #[allow(clippy::needless_pass_by_value)]
