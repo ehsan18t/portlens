@@ -541,20 +541,23 @@ fn merge_state(current: State, next: State) -> State {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn state_from_linux_code(code: &str) -> State {
-    match code.to_ascii_uppercase().as_str() {
-        "01" => State::Established,
-        "02" => State::SynSent,
-        "03" => State::SynReceived,
-        "04" => State::FinWait1,
-        "05" => State::FinWait2,
-        "06" => State::TimeWait,
-        "07" => State::Close,
-        "08" => State::CloseWait,
-        "09" => State::LastAck,
-        "0A" => State::Listen,
-        "0B" => State::Closing,
-        "0C" => State::NewSynReceived,
+const fn state_from_linux_code(code: &str) -> State {
+    let Ok(parsed) = u8::from_str_radix(code, 16) else {
+        return State::Unknown;
+    };
+    match parsed {
+        0x01 => State::Established,
+        0x02 => State::SynSent,
+        0x03 => State::SynReceived,
+        0x04 => State::FinWait1,
+        0x05 => State::FinWait2,
+        0x06 => State::TimeWait,
+        0x07 => State::Close,
+        0x08 => State::CloseWait,
+        0x09 => State::LastAck,
+        0x0A => State::Listen,
+        0x0B => State::Closing,
+        0x0C => State::NewSynReceived,
         _ => State::Unknown,
     }
 }
