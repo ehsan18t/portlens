@@ -54,6 +54,9 @@ fn build_entry(l: &listeners::Listener, sys: &System, users: &Users) -> PortEntr
         pid: l.process.pid,
         process: l.process.name.clone(),
         user,
+        project: None,
+        app: None,
+        uptime_secs: None,
     }
 }
 

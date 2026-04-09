@@ -58,6 +58,35 @@ pub struct PortEntry {
     pub process: String,
     /// Owning user or account name, or `"-"` if unavailable.
     pub user: String,
+    /// Project folder name or Docker container name.
+    pub project: Option<String>,
+    /// Detected app/framework label (e.g. "Next.js", "`PostgreSQL`").
+    pub app: Option<String>,
+    /// Process uptime in seconds.
+    pub uptime_secs: Option<u64>,
+}
+
+/// Format an uptime duration in seconds into a human-readable string.
+///
+/// Returns `"-"` if the input is `None`.
+#[must_use]
+pub fn format_uptime(secs: Option<u64>) -> String {
+    let Some(s) = secs else {
+        return "-".to_string();
+    };
+    let minutes = s / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+
+    if days > 0 {
+        format!("{}d {}h", days, hours % 24)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, minutes % 60)
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        "< 1m".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +120,30 @@ mod tests {
             "-",
             "NotApplicable display string"
         );
+    }
+
+    #[test]
+    fn format_uptime_none() {
+        assert_eq!(format_uptime(None), "-");
+    }
+
+    #[test]
+    fn format_uptime_seconds() {
+        assert_eq!(format_uptime(Some(30)), "< 1m");
+    }
+
+    #[test]
+    fn format_uptime_minutes() {
+        assert_eq!(format_uptime(Some(300)), "5m");
+    }
+
+    #[test]
+    fn format_uptime_hours_minutes() {
+        assert_eq!(format_uptime(Some(7200 + 2400)), "2h 40m");
+    }
+
+    #[test]
+    fn format_uptime_days_hours() {
+        assert_eq!(format_uptime(Some(86400 + 32400)), "1d 9h");
     }
 }

@@ -24,6 +24,9 @@ fn bench_filter(c: &mut Criterion) {
             pid: 1000 + u32::from(i),
             process: format!("proc_{i}"),
             user: "user".to_string(),
+            project: None,
+            app: None,
+            uptime_secs: None,
         })
         .collect();
 

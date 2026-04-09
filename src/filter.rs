@@ -59,6 +59,9 @@ mod tests {
             pid: 1234,
             process: "test".to_string(),
             user: "user".to_string(),
+            project: None,
+            app: None,
+            uptime_secs: None,
         }
     }
 
