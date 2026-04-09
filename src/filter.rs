@@ -50,6 +50,8 @@ const RELEVANT_PROCESSES: &[&str] = &[
     "mongos",
     "redis-server",
     "redis",
+    "valkey-server",
+    "valkey",
     "memcached",
     "clickhouse-server",
     "cockroach",

@@ -21,6 +21,7 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         s if s.starts_with("mariadb") => Some("MariaDB"),
         s if s.starts_with("mongo") => Some("MongoDB"),
         s if s.starts_with("redis") => Some("Redis"),
+        s if s.starts_with("valkey") => Some("Valkey"),
         s if s.starts_with("memcached") => Some("Memcached"),
         s if s.starts_with("nginx") => Some("Nginx"),
         s if s == "httpd" || s.starts_with("apache") => Some("Apache"),
@@ -117,6 +118,7 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
         "mariadbd" | "mariadb" => Some("MariaDB"),
         "mongod" | "mongos" => Some("MongoDB"),
         "redis-server" | "redis" => Some("Redis"),
+        "valkey-server" | "valkey" => Some("Valkey"),
         "memcached" => Some("Memcached"),
         "nginx" => Some("Nginx"),
         "apache2" | "httpd" => Some("Apache"),
@@ -181,6 +183,15 @@ mod tests {
             image: "redis:7-alpine".to_string(),
         };
         assert_eq!(detect_from_image(&info), Some("Redis"));
+    }
+
+    #[test]
+    fn image_valkey() {
+        let info = ContainerInfo {
+            name: "cache".to_string(),
+            image: "valkey/valkey:8-alpine".to_string(),
+        };
+        assert_eq!(detect_from_image(&info), Some("Valkey"));
     }
 
     #[test]
