@@ -180,6 +180,11 @@ fn resolve_state(l: &listeners::Listener, tcp_states: &TcpStateIndex) -> State {
 }
 
 /// Load a best-effort index of TCP socket states keyed by local socket.
+///
+/// Because the `listeners` crate exposes only the local socket, state
+/// aggregation is necessarily port-centric: exact matches are preserved,
+/// mixed non-listener states become `UNKNOWN`, and `LISTEN` wins when a
+/// listening socket shares the same local address and port.
 #[cfg(target_os = "linux")]
 fn load_tcp_state_index() -> TcpStateIndex {
     let mut index = HashMap::new();
@@ -189,6 +194,11 @@ fn load_tcp_state_index() -> TcpStateIndex {
 }
 
 /// Load a best-effort index of TCP socket states keyed by local socket.
+///
+/// Because the `listeners` crate exposes only the local socket, state
+/// aggregation is necessarily port-centric: exact matches are preserved,
+/// mixed non-listener states become `UNKNOWN`, and `LISTEN` wins when a
+/// listening socket shares the same local address and port.
 #[cfg(windows)]
 fn load_tcp_state_index() -> TcpStateIndex {
     let mut index = HashMap::new();
@@ -382,17 +392,11 @@ fn extend_windows_tcpv4_state_index(table: &[u8], index: &mut TcpStateIndex) {
         let Some(local_addr) = read_u32_ne(row, 4) else {
             continue;
         };
-        let Some(local_port) = read_u32_ne(row, 8) else {
-            continue;
-        };
-        let Ok(port) = u16::try_from(local_port) else {
+        let Some(port) = read_windows_port(row, 8) else {
             continue;
         };
 
-        let socket = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::from(u32::from_be(local_addr))),
-            u16::from_be(port),
-        );
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(u32::from_be(local_addr))), port);
         merge_tcp_state(index, socket, state_from_windows_code(state_code));
     }
 }
@@ -410,20 +414,17 @@ fn extend_windows_tcpv6_state_index(table: &[u8], index: &mut TcpStateIndex) {
         let Some(state_code) = read_u32_ne(row, 48) else {
             continue;
         };
-        let Some(local_port) = read_u32_ne(row, 20) else {
-            continue;
-        };
         let Some(local_addr_bytes) = row.get(0..16) else {
             continue;
         };
-        let Ok(port) = u16::try_from(local_port) else {
+        let Some(port) = read_windows_port(row, 20) else {
             continue;
         };
         let Ok(local_addr) = <[u8; 16]>::try_from(local_addr_bytes) else {
             continue;
         };
 
-        let socket = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(local_addr)), u16::from_be(port));
+        let socket = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(local_addr)), port);
         merge_tcp_state(index, socket, state_from_windows_code(state_code));
     }
 }
@@ -439,6 +440,14 @@ fn read_u32_ne(bytes: &[u8], offset: usize) -> Option<u32> {
     let raw = bytes.get(offset..end)?;
     let array: [u8; 4] = raw.try_into().ok()?;
     Some(u32::from_ne_bytes(array))
+}
+
+#[cfg(windows)]
+fn read_windows_port(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    let raw = bytes.get(offset..end)?;
+    let array: [u8; 2] = raw.try_into().ok()?;
+    Some(u16::from_be_bytes(array))
 }
 
 fn merge_tcp_state(index: &mut TcpStateIndex, socket: SocketAddr, state: State) {
@@ -464,6 +473,10 @@ fn merge_state(current: State, next: State) -> State {
     }
     if next == State::Unknown {
         return current;
+    }
+
+    if current == State::Listen || next == State::Listen {
+        return State::Listen;
     }
 
     State::Unknown
@@ -872,9 +885,44 @@ mod tests {
     #[test]
     fn merge_state_marks_conflicts_unknown() {
         assert_eq!(
-            merge_state(State::Established, State::Listen),
+            merge_state(State::Established, State::TimeWait),
             State::Unknown,
-            "conflicting states should become unknown instead of guessing"
+            "mixed non-listener states should become unknown instead of guessing"
+        );
+    }
+
+    #[test]
+    fn merge_state_prefers_listen_for_shared_local_socket() {
+        assert_eq!(
+            merge_state(State::Established, State::Listen),
+            State::Listen,
+            "a listener on the same local socket should stay visible"
+        );
+    }
+
+    #[test]
+    fn merge_tcp_state_keeps_listen_when_states_conflict() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5432);
+        let mut index = HashMap::new();
+
+        merge_tcp_state(&mut index, socket, State::Established);
+        merge_tcp_state(&mut index, socket, State::Listen);
+
+        assert_eq!(
+            index.get(&socket).copied(),
+            Some(State::Listen),
+            "the aggregate state for a shared local socket should prefer LISTEN"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_port_reader_extracts_big_endian_port_bytes() {
+        let row = [0x00, 0x50, 0x00, 0x00];
+        assert_eq!(
+            read_windows_port(&row, 0),
+            Some(80),
+            "network-order port bytes should decode directly"
         );
     }
 

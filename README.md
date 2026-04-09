@@ -99,19 +99,19 @@ cargo install portview
 
 ## CLI Reference
 
-| Flag           | Short | Description                                        |
-| -------------- | ----- | -------------------------------------------------- |
-| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter) |
-| `--full`       | `-f`  | Show all columns (adds STATE, USER)                |
-| `--compact`    | `-c`  | Use compact borderless table style                 |
-| `--tcp`        | `-t`  | Show only TCP sockets                              |
-| `--udp`        | `-u`  | Show only UDP sockets                              |
-| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)       |
+| Flag           | Short | Description                                                             |
+| -------------- | ----- | ----------------------------------------------------------------------- |
+| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter)                      |
+| `--full`       | `-f`  | Show all columns (adds STATE, USER)                                     |
+| `--compact`    | `-c`  | Use compact borderless table style                                      |
+| `--tcp`        | `-t`  | Show only TCP sockets                                                   |
+| `--udp`        | `-u`  | Show only UDP sockets                                                   |
+| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)                            |
 | `--port <num>` | `-p`  | Filter results to the specified port number and bypass the smart filter |
-| `--no-header`  |       | Suppress the column header row                     |
-| `--json`       |       | Output results as a JSON array                     |
-| `--version`    | `-V`  | Print the version string and exit                  |
-| `--help`       | `-h`  | Print usage information and exit                   |
+| `--no-header`  |       | Suppress the column header row                                          |
+| `--json`       |       | Output results as a JSON array                                          |
+| `--version`    | `-V`  | Print the version string and exit                                       |
+| `--help`       | `-h`  | Print usage information and exit                                        |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
 
@@ -133,10 +133,10 @@ Default columns:
 
 Additional columns with `--full`:
 
-| Column | Description                                                |
-| ------ | ---------------------------------------------------------- |
-| STATE  | Best-effort TCP state; ambiguous sockets show `UNKNOWN`, UDP shows `-` |
-| USER   | Owning user. Shows `-` if unavailable                      |
+| Column | Description                                                                                                             |
+| ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| STATE  | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
+| USER   | Owning user. Shows `-` if unavailable                                                                                   |
 
 ---
 
