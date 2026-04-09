@@ -129,6 +129,21 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
 
     match lower.as_str() {
+        // Runtimes
+        "node" | "nodejs" => Some("Node.js"),
+        "python" | "python3" => Some("Python"),
+        "ruby" => Some("Ruby"),
+        "java" => Some("Java"),
+        "go" => Some("Go"),
+        "deno" => Some("Deno"),
+        "bun" => Some("Bun"),
+        "dotnet" => Some(".NET"),
+        "php" => Some("PHP"),
+        "perl" => Some("Perl"),
+        "cargo" | "rustc" => Some("Rust"),
+        "erlang" => Some("Erlang"),
+        "elixir" => Some("Elixir"),
+        // Databases
         "postgres" | "postgresql" => Some("PostgreSQL"),
         "mysqld" | "mysql" => Some("MySQL"),
         "mariadbd" | "mariadb" => Some("MariaDB"),
@@ -136,18 +151,27 @@ pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
         "redis-server" | "redis" => Some("Redis"),
         "valkey-server" | "valkey" => Some("Valkey"),
         "memcached" => Some("Memcached"),
+        "clickhouse-server" => Some("ClickHouse"),
+        "cockroach" => Some("CockroachDB"),
+        // Web servers
         "nginx" => Some("Nginx"),
         "apache2" | "httpd" => Some("Apache"),
         "caddy" => Some("Caddy"),
         "traefik" => Some("Traefik"),
         "envoy" => Some("Envoy"),
         "haproxy" => Some("HAProxy"),
-        "rabbitmq-server" => Some("RabbitMQ"),
+        // Search/messaging
         "elasticsearch" => Some("Elasticsearch"),
-        "clickhouse-server" => Some("ClickHouse"),
+        "opensearch" => Some("OpenSearch"),
+        "rabbitmq-server" => Some("RabbitMQ"),
+        "kafka" => Some("Kafka"),
+        // Dev tools
+        "webpack" => Some("Webpack"),
+        "vite" => Some("Vite"),
+        "next-server" => Some("Next.js"),
+        "nuxt" => Some("Nuxt"),
         "hugo" => Some("Hugo"),
         "jekyll" => Some("Jekyll"),
-        "node" | "nodejs" => Some("Node.js"),
         _ => None,
     }
 }
