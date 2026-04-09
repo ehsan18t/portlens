@@ -4,6 +4,7 @@
 //! resolve process metadata (name, owning user). Enriches each entry with
 //! Docker container info, project root detection, and app/framework labels.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -18,6 +19,10 @@ use crate::{framework, project};
 /// Returns a `Vec<PortEntry>` sorted by port number in ascending order.
 /// Entries where the PID or username cannot be resolved are still included
 /// with placeholder values.
+///
+/// When multiple OS-level sockets share the same port and protocol (e.g.
+/// Docker Desktop on Windows binding to both IPv4 and IPv6), only the
+/// most enriched entry is kept.
 pub fn collect() -> Result<Vec<PortEntry>> {
     let raw_listeners = listeners::get_all()
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
@@ -33,11 +38,12 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let mut entries: Vec<PortEntry> = raw_listeners
+    let all_entries: Vec<PortEntry> = raw_listeners
         .into_iter()
         .map(|l| build_entry(&l, &sys, &users, &container_map, now_epoch))
         .collect();
 
+    let mut entries = deduplicate(all_entries);
     entries.sort_by_key(|e| (e.port, e.proto));
     Ok(entries)
 }
@@ -116,6 +122,49 @@ fn build_entry(
     }
 }
 
+/// Deduplicate entries that share the same `(port, protocol)`.
+///
+/// On Windows with Docker Desktop (WSL2), the OS reports multiple sockets
+/// for the same Docker-published port (e.g. `wslrelay.exe` on IPv4,
+/// `com.docker.backend.exe` on both IPv4 and IPv6). This keeps only the
+/// entry with the richest enrichment data per port+protocol pair.
+fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    let mut best: HashMap<(u16, Protocol), PortEntry> = HashMap::new();
+
+    for entry in entries {
+        let key = (entry.port, entry.proto);
+        best.entry(key)
+            .and_modify(|existing| {
+                if enrichment_score(&entry) > enrichment_score(existing) {
+                    *existing = entry.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+
+    best.into_values().collect()
+}
+
+/// Score an entry by how much enrichment data it carries.
+///
+/// Higher score means the entry has more useful metadata.
+fn enrichment_score(e: &PortEntry) -> u8 {
+    let mut score = 0;
+    if e.project.is_some() {
+        score += 2;
+    }
+    if e.app.is_some() {
+        score += 2;
+    }
+    if e.uptime_secs.is_some() {
+        score += 1;
+    }
+    if e.user != "-" {
+        score += 1;
+    }
+    score
+}
+
 /// Resolve the owning username for an already-looked-up process.
 ///
 /// Returns `"-"` if the process or user cannot be determined.
@@ -141,4 +190,98 @@ fn process_refresh_kind() -> ProcessRefreshKind {
         .with_user(UpdateKind::OnlyIfNotSet)
         .with_cwd(UpdateKind::OnlyIfNotSet)
         .with_cmd(UpdateKind::OnlyIfNotSet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(port: u16, proto: Protocol) -> PortEntry {
+        PortEntry {
+            port,
+            proto,
+            state: State::Listen,
+            pid: 1000,
+            process: "test".to_string(),
+            user: "-".to_string(),
+            project: None,
+            app: None,
+            uptime_secs: None,
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_single_entry_per_port() {
+        let entries = vec![
+            make_entry(5432, Protocol::Tcp),
+            make_entry(5432, Protocol::Tcp),
+            make_entry(5432, Protocol::Tcp),
+        ];
+        let result = deduplicate(entries);
+        assert_eq!(result.len(), 1, "three entries on same port should merge");
+    }
+
+    #[test]
+    fn dedup_preserves_different_ports() {
+        let entries = vec![
+            make_entry(5432, Protocol::Tcp),
+            make_entry(6379, Protocol::Tcp),
+            make_entry(53, Protocol::Udp),
+        ];
+        let result = deduplicate(entries);
+        assert_eq!(
+            result.len(),
+            3,
+            "distinct port+proto pairs should all remain"
+        );
+    }
+
+    #[test]
+    fn dedup_preserves_same_port_different_protocol() {
+        let entries = vec![make_entry(53, Protocol::Tcp), make_entry(53, Protocol::Udp)];
+        let result = deduplicate(entries);
+        assert_eq!(
+            result.len(),
+            2,
+            "same port with different protocols should both remain"
+        );
+    }
+
+    #[test]
+    fn dedup_prefers_enriched_entry() {
+        let mut bare = make_entry(5432, Protocol::Tcp);
+        bare.process = "wslrelay.exe".to_string();
+
+        let mut enriched = make_entry(5432, Protocol::Tcp);
+        enriched.process = "com.docker.backend.exe".to_string();
+        enriched.project = Some("my-postgres".to_string());
+        enriched.app = Some("PostgreSQL".to_string());
+        enriched.uptime_secs = Some(3600);
+
+        // Insert bare first, enriched second
+        let result = deduplicate(vec![bare, enriched]);
+        assert_eq!(result.len(), 1);
+        let entry = &result[0];
+        assert_eq!(
+            entry.project.as_deref(),
+            Some("my-postgres"),
+            "should keep the enriched entry"
+        );
+    }
+
+    #[test]
+    fn enrichment_score_empty() {
+        let entry = make_entry(80, Protocol::Tcp);
+        assert_eq!(enrichment_score(&entry), 0, "bare entry should score 0");
+    }
+
+    #[test]
+    fn enrichment_score_fully_enriched() {
+        let mut entry = make_entry(80, Protocol::Tcp);
+        entry.project = Some("proj".to_string());
+        entry.app = Some("App".to_string());
+        entry.uptime_secs = Some(100);
+        entry.user = "admin".to_string();
+        assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");
+    }
 }
