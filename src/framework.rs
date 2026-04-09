@@ -12,8 +12,12 @@ use crate::docker::ContainerInfo;
 /// Matches the base image name (before the colon tag) against known patterns.
 #[must_use]
 pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
-    let image = info.image.split('/').next_back().unwrap_or(&info.image);
-    let base = image.split(':').next().unwrap_or(image);
+    let image = info.image.to_ascii_lowercase();
+    let last_segment = image.split('/').next_back().unwrap_or(image.as_str());
+    let base = last_segment
+        .split([':', '@'])
+        .next()
+        .unwrap_or(last_segment);
 
     match base {
         s if s.starts_with("postgres") => Some("PostgreSQL"),
@@ -41,7 +45,9 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         // Exact match to avoid false positives (e.g. "rust-analyzer").
         "rust" => Some("Rust"),
         s if s.starts_with("openjdk") || s.starts_with("eclipse-temurin") => Some("Java"),
-        s if s.starts_with("dotnet") => Some(".NET"),
+        s if s.starts_with("dotnet") || image.split('/').any(|segment| segment == "dotnet") => {
+            Some(".NET")
+        }
         _ => None,
     }
 }
@@ -60,13 +66,14 @@ const CONFIG_PATTERNS: &[(&str, &str)] = &[
     ("vue.config", "Vue CLI"),
     ("webpack.config", "Webpack"),
     ("manage.py", "Django"),
+    ("app.py", "Flask"),
+    ("wsgi.py", "Flask"),
     ("Cargo.toml", "Rust"),
     ("go.mod", "Go"),
     ("pom.xml", "Java (Maven)"),
     ("build.gradle.kts", "Kotlin (Gradle)"),
     ("build.gradle", "Java (Gradle)"),
     ("composer.json", "PHP"),
-    ("config.ru", "Ruby (Rack)"),
     ("mix.exs", "Elixir"),
     ("deno.json", "Deno"),
     ("pyproject.toml", "Python"),
@@ -84,16 +91,26 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
         return None;
     };
 
+    let rack_priority = CONFIG_PATTERNS
+        .iter()
+        .position(|&(pattern, _)| pattern == "mix.exs")
+        .unwrap_or(CONFIG_PATTERNS.len());
+
     // Track best match by its position in CONFIG_PATTERNS (lower = higher
     // priority). This lets us return the highest-priority match while
     // iterating only once through the directory entries.
     let mut best: Option<(usize, &'static str)> = None;
+    let mut has_gemfile = false;
+    let mut has_config_ru = false;
 
     for entry in entries.filter_map(Result::ok) {
         let file_name = entry.file_name();
         let Some(name) = file_name.to_str() else {
             continue;
         };
+
+        has_gemfile |= name == "Gemfile";
+        has_config_ru |= name == "config.ru";
 
         // Check name-based patterns; keep only if higher priority than current best.
         for (i, (pattern, label)) in CONFIG_PATTERNS.iter().enumerate() {
@@ -117,6 +134,15 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
                 }
             }
         }
+    }
+
+    if has_gemfile
+        && has_config_ru
+        && best
+            .as_ref()
+            .is_none_or(|&(best_i, _)| rack_priority < best_i)
+    {
+        best = Some((rack_priority, "Ruby (Rack)"));
     }
 
     best.map(|(_, label)| label)
@@ -291,6 +317,15 @@ mod tests {
     }
 
     #[test]
+    fn image_dotnet_microsoft_registry() {
+        let info = ContainerInfo {
+            name: "api".to_string(),
+            image: "mcr.microsoft.com/dotnet/aspnet:8.0".to_string(),
+        };
+        assert_eq!(detect_from_image(&info), Some(".NET"));
+    }
+
+    #[test]
     fn config_nextjs() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("next.config.mjs"), "").unwrap();
@@ -309,6 +344,28 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("manage.py"), "").unwrap();
         assert_eq!(detect_from_config(dir.path()), Some("Django"));
+    }
+
+    #[test]
+    fn config_flask() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("app.py"), "").unwrap();
+        assert_eq!(detect_from_config(dir.path()), Some("Flask"));
+    }
+
+    #[test]
+    fn config_rack_requires_gemfile() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("config.ru"), "").unwrap();
+        assert_eq!(detect_from_config(dir.path()), None);
+    }
+
+    #[test]
+    fn config_rack_when_gemfile_and_config_ru_exist() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("Gemfile"), "").unwrap();
+        fs::write(dir.path().join("config.ru"), "").unwrap();
+        assert_eq!(detect_from_config(dir.path()), Some("Ruby (Rack)"));
     }
 
     #[test]
