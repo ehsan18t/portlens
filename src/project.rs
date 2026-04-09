@@ -153,12 +153,12 @@ pub(crate) fn has_marker(dir: &Path) -> bool {
 
     entries.filter_map(Result::ok).any(|entry| {
         let file_name = entry.file_name();
-        let path = std::path::Path::new(file_name.as_os_str());
+        let Some(name) = file_name.to_str() else {
+            return false;
+        };
 
-        path.file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| PROJECT_MARKERS.contains(&name))
-            || path
+        PROJECT_MARKERS.contains(&name)
+            || Path::new(name)
                 .extension()
                 .and_then(OsStr::to_str)
                 .is_some_and(|ext| PROJECT_MARKER_EXTENSIONS.contains(&ext))
