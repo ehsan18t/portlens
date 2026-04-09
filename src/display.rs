@@ -8,38 +8,77 @@ use std::io::{self, Write};
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table};
 
-use crate::types::PortEntry;
+use crate::types::{PortEntry, format_uptime};
 
 /// Maximum display width for the process name column before truncation.
 const MAX_PROCESS_NAME_LEN: usize = 20;
 
-/// Print the entries as an aligned table to stdout.
+/// Options controlling how entries are rendered.
+pub struct DisplayOptions {
+    /// Show the header row.
+    pub show_header: bool,
+    /// Show all columns (adds STATE and USER).
+    pub full: bool,
+    /// Use compact (borderless) table style.
+    pub compact: bool,
+}
+
+/// Print the entries as a table to stdout.
 ///
-/// When `show_header` is `true`, a header row is printed above the data.
-///
+/// Table style and column selection are controlled by `opts`.
 /// Returns an error if writing to stdout fails (e.g. broken pipe).
-pub fn print_table(entries: &[PortEntry], show_header: bool) -> Result<()> {
+pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
-    // Disable borders for a clean netstat-like appearance
-    table.load_preset(comfy_table::presets::NOTHING);
+    if opts.compact {
+        table.load_preset(comfy_table::presets::NOTHING);
+    } else {
+        table.load_preset(comfy_table::presets::UTF8_FULL);
+        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+    }
 
-    if show_header {
-        table.set_header(vec!["PORT", "PROTO", "STATE", "PID", "PROCESS", "USER"]);
+    if opts.show_header {
+        if opts.full {
+            table.set_header(vec![
+                "PORT", "PROTO", "STATE", "PROCESS", "PID", "USER", "PROJECT", "APP", "UPTIME",
+            ]);
+        } else {
+            table.set_header(vec![
+                "PORT", "PROTO", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
+            ]);
+        }
     }
 
     for entry in entries {
         let process_display = truncate_process_name(&entry.process);
+        let project = entry.project.as_deref().unwrap_or("-");
+        let app = entry.app.as_deref().unwrap_or("-");
+        let uptime = format_uptime(entry.uptime_secs);
 
-        table.add_row(vec![
-            entry.port.to_string(),
-            entry.proto.to_string(),
-            entry.state.to_string(),
-            entry.pid.to_string(),
-            process_display,
-            entry.user.clone(),
-        ]);
+        if opts.full {
+            table.add_row(vec![
+                entry.port.to_string(),
+                entry.proto.to_string(),
+                entry.state.to_string(),
+                process_display,
+                entry.pid.to_string(),
+                entry.user.clone(),
+                project.to_string(),
+                app.to_string(),
+                uptime,
+            ]);
+        } else {
+            table.add_row(vec![
+                entry.port.to_string(),
+                entry.proto.to_string(),
+                process_display,
+                entry.pid.to_string(),
+                project.to_string(),
+                app.to_string(),
+                uptime,
+            ]);
+        }
     }
 
     writeln!(io::stdout().lock(), "{table}")?;

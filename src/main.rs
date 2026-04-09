@@ -71,7 +71,14 @@ fn run() -> Result<()> {
     if cli.json {
         display::print_json(&filtered)?;
     } else {
-        display::print_table(&filtered, !cli.no_header)?;
+        display::print_table(
+            &filtered,
+            &display::DisplayOptions {
+                show_header: !cli.no_header,
+                full: false,    // TODO: wire to --full flag in Task 9
+                compact: false, // TODO: wire to --compact flag in Task 9
+            },
+        )?;
     }
 
     Ok(())
