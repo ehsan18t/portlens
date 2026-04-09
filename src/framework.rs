@@ -76,32 +76,50 @@ const CONFIG_PATTERNS: &[(&str, &str)] = &[
 const CONFIG_EXTENSIONS: &[(&str, &str)] = &[("csproj", ".NET"), ("fsproj", ".NET (F#)")];
 
 /// Detect app label by scanning config files in a project root.
+///
+/// Iterates directory entries lazily and returns the highest-priority
+/// match without reading the entire directory when an early match exists.
 pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
     let Ok(entries) = std::fs::read_dir(project_root) else {
         return None;
     };
 
-    let filenames: Vec<String> = entries
-        .filter_map(Result::ok)
-        .filter_map(|e| e.file_name().to_str().map(String::from))
-        .collect();
+    // Track best match by its position in CONFIG_PATTERNS (lower = higher
+    // priority). This lets us return the highest-priority match while
+    // iterating only once through the directory entries.
+    let mut best: Option<(usize, &'static str)> = None;
 
-    for (pattern, label) in CONFIG_PATTERNS {
-        if filenames.iter().any(|f| f.starts_with(pattern)) {
-            return Some(label);
+    for entry in entries.filter_map(Result::ok) {
+        let Some(name) = entry.file_name().to_str().map(String::from) else {
+            continue;
+        };
+
+        // Check name-based patterns; keep only if higher priority than current best.
+        for (i, (pattern, label)) in CONFIG_PATTERNS.iter().enumerate() {
+            if name.starts_with(pattern) && best.as_ref().is_none_or(|&(best_i, _)| i < best_i) {
+                if i == 0 {
+                    return Some(label); // Top priority — cannot be beaten.
+                }
+                best = Some((i, label));
+                break; // A filename matches at most one pattern.
+            }
         }
-    }
 
-    for (ext, label) in CONFIG_EXTENSIONS {
-        if filenames
-            .iter()
-            .any(|f| f.rsplit('.').next().is_some_and(|e| e == *ext))
+        // Check extension-based patterns (lower priority than all name patterns).
+        if best.is_none()
+            && let Some(ext) = std::path::Path::new(&name).extension()
         {
-            return Some(label);
+            let ext_str = ext.to_string_lossy();
+            for (target_ext, label) in CONFIG_EXTENSIONS {
+                if *target_ext == ext_str.as_ref() {
+                    best = Some((CONFIG_PATTERNS.len(), label));
+                    break;
+                }
+            }
         }
     }
 
-    None
+    best.map(|(_, label)| label)
 }
 
 /// Detect app label from a process executable name.
