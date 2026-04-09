@@ -96,8 +96,9 @@ fn build_entry(
     // The cache avoids redundant directory walks for processes sharing a cwd.
     let (project_name, project_root) = container.map_or_else(
         || {
-            let cwd = sysinfo_process.and_then(|p| p.cwd().map(Path::to_path_buf));
-            let root = lookup_project_root(cwd.as_ref(), sysinfo_process, project_cache);
+            let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
+            let cmd = extract_cmd(sysinfo_process);
+            let root = lookup_project_root(cwd, &cmd, project_cache);
             let name = root
                 .as_ref()
                 .and_then(|r| r.file_name())
@@ -136,11 +137,15 @@ fn build_entry(
 /// Look up the project root for a process, using a cache to skip repeated
 /// directory walks for processes that share the same working directory.
 ///
-/// Falls back to parsing command-line arguments when cwd-based detection
-/// fails. The fallback is per-process and not cached.
+/// Falls back to [`project::detect_project_root`] for command-line
+/// argument parsing when cwd-based detection fails.
+///
+/// Accepts `Option<&Path>` to avoid allocating a `PathBuf` for every
+/// process on the cache-hit path. A `PathBuf` is only allocated on a
+/// cache miss when inserting the result.
 fn lookup_project_root(
-    cwd: Option<&PathBuf>,
-    sysinfo_process: Option<&sysinfo::Process>,
+    cwd: Option<&Path>,
+    cmd: &[String],
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> Option<PathBuf> {
     if let Some(cwd_path) = cwd {
@@ -148,36 +153,33 @@ fn lookup_project_root(
             if cached.is_some() {
                 return cached.clone();
             }
+            // Cached None: cwd walk found nothing; fall through to cmd-args.
         } else {
             let result = project::find_from_dir(cwd_path);
-            cache.insert(cwd_path.clone(), result.clone());
+            cache.insert(cwd_path.to_path_buf(), result.clone());
             if result.is_some() {
                 return result;
             }
         }
     }
 
-    // Fallback: look for absolute paths in command-line arguments.
-    // Only checked when cwd-based detection found nothing.
-    let cmd: Vec<String> = sysinfo_process
+    // Delegate the cmd-args fallback to the project module so the
+    // logic is not duplicated in two places.
+    project::detect_project_root(None, cmd)
+}
+
+/// Extract command-line arguments from a sysinfo process handle.
+///
+/// Returns an empty `Vec` when the process is `None` or has no args.
+fn extract_cmd(process: Option<&sysinfo::Process>) -> Vec<String> {
+    process
         .map(|p| {
             p.cmd()
                 .iter()
                 .map(|s| s.to_string_lossy().into_owned())
                 .collect()
         })
-        .unwrap_or_default();
-
-    for arg in &cmd {
-        let path = Path::new(arg.as_str());
-        if path.is_absolute()
-            && let Some(parent) = path.parent()
-            && let Some(root) = project::find_from_dir(parent)
-        {
-            return Some(root);
-        }
-    }
-    None
+        .unwrap_or_default()
 }
 
 /// Deduplicate entries that share the same `(port, protocol)`.
