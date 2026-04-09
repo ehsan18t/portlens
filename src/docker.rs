@@ -383,6 +383,7 @@ fn send_http_request_windows(
     }
 }
 
+#[cfg(any(windows, test))]
 fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
     let text = std::str::from_utf8(response).ok()?;
     let headers_end = text.find("\r\n\r\n")?;
@@ -402,6 +403,7 @@ fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
     eof.then(|| body.to_string())
 }
 
+#[cfg(any(windows, test))]
 fn parse_content_length<'a>(mut header_lines: impl Iterator<Item = &'a str>) -> Option<usize> {
     header_lines.find_map(|line| {
         let (name, value) = line.split_once(':')?;

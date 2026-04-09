@@ -850,7 +850,7 @@ fn resolve_user(
         return "-".to_string();
     };
 
-    let uid = *uid.deref();
+    let uid = **uid;
     if let Some(cached) = resolver.names_by_uid.get(&uid) {
         return cached.clone();
     }
@@ -878,7 +878,7 @@ fn lookup_unix_username(uid: libc::uid_t) -> Option<String> {
                 password.as_mut_ptr(),
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
-                &mut result,
+                &raw mut result,
             )
         };
 
