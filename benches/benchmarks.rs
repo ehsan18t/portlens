@@ -24,9 +24,17 @@ fn bench_filter(c: &mut Criterion) {
             pid: 1000 + u32::from(i),
             process: format!("proc_{i}"),
             user: "user".to_string(),
-            project: None,
-            app: None,
-            uptime_secs: None,
+            project: if i % 4 == 0 {
+                Some(format!("project_{i}"))
+            } else {
+                None
+            },
+            app: if i % 5 == 0 {
+                Some("Next.js".to_string())
+            } else {
+                None
+            },
+            uptime_secs: Some(u64::from(i) * 3600),
         })
         .collect();
 
