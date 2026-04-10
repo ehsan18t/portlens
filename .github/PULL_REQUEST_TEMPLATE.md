@@ -1,34 +1,39 @@
 ## Description
 
-<!-- Brief description of what this PR does. -->
+<!-- What does this PR do? Keep it brief; link related issues below. -->
 
 ## Type of Change
 
+<!-- Check the one that applies: -->
+
 - [ ] Bug fix (non-breaking change that fixes an issue)
 - [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to change)
+- [ ] Breaking change (fix or feature that causes existing functionality to change)
 - [ ] Refactor (no functional changes)
 - [ ] Documentation update
 - [ ] CI / build change
+- [ ] Performance improvement
 
 ## Related Issues
 
-<!-- Link related issues: Closes #123, Fixes #456 -->
+<!-- Link issues: Closes #123, Fixes #456, Relates to #789 -->
 
-## Checklist
+## How was this tested?
 
-- [ ] `cargo fmt` — code is formatted
-- [ ] `cargo clippy` — no lint errors (deny level)
-- [ ] `cargo test` — all tests pass
-- [ ] `cargo build --release` — release build succeeds
-- [ ] `cargo doc` — documentation builds without warnings
-- [ ] Documentation updated (README, help text, guides) if behaviour changed
-- [ ] Commit messages follow Conventional Commits format
+<!-- Describe the test plan: new unit tests, manual commands, etc. -->
 
-## Testing
+## Quality Checklist
 
-<!-- How was this tested? Include steps to verify. -->
+> All gates are enforced by `pre-commit` and `pre-push` hooks.
+> Run `cargo fmt && cargo clippy && cargo test` before pushing.
 
-## Screenshots / Output
+- [ ] `cargo fmt --check` passes
+- [ ] `cargo clippy --all-targets` passes (deny level)
+- [ ] `cargo test --all-targets` passes
+- [ ] `cargo doc --no-deps` builds without warnings
+- [ ] Documentation updated (README, `--help`, guides) if behaviour changed
+- [ ] Commits follow [Conventional Commits](https://www.conventionalcommits.org) format
 
-<!-- If applicable, paste terminal output showing the change. -->
+## Screenshots / Terminal Output
+
+<!-- If applicable, paste terminal output or screenshots showing the change. -->
