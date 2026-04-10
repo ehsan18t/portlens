@@ -7,7 +7,7 @@
 //! with zero additional dependencies.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read as _, Write as _};
+use std::io::{BufRead, BufReader, Read as _};
 use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
@@ -138,13 +138,12 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
 fn query_daemon() -> Option<ContainerPortMap> {
     // Honour DOCKER_HOST when it specifies a TCP address.
     if let Some(addr) = docker_host_tcp_addr() {
-        return fetch_tcp_json(&addr).and_then(|body| merge_daemon_responses([body]));
+        return fetch_tcp_json(&addr).map(|body| parse_containers_json(&body));
     }
 
     // Honour DOCKER_HOST when it points at a Unix socket (unix://).
     if let Some(path) = docker_host_unix_path() {
-        return fetch_unix_socket_json(Path::new(&path))
-            .and_then(|body| merge_daemon_responses([body]));
+        return fetch_unix_socket_json(Path::new(&path)).map(|body| parse_containers_json(&body));
     }
 
     // Safety: getuid() is a simple syscall with no preconditions.
@@ -187,6 +186,7 @@ fn query_daemon() -> Option<ContainerPortMap> {
     None
 }
 
+#[cfg(unix)]
 fn merge_daemon_responses<T, I>(responses: I) -> Option<ContainerPortMap>
 where
     T: AsRef<str>,
@@ -288,7 +288,9 @@ fn normalize_container_name(name: &str) -> Option<String> {
     (!normalized.is_empty()).then(|| normalized.to_string())
 }
 
-fn short_container_id(id: &str) -> String {
+/// Truncate a full container ID to its 12-character short form.
+#[must_use]
+pub fn short_container_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
 
@@ -377,7 +379,6 @@ fn fetch_unix_socket_json(path: &Path) -> Option<String> {
     send_http_request(&mut stream)
 }
 
-#[cfg(unix)]
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
     stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
@@ -517,32 +518,7 @@ fn fetch_tcp_json(addr: &str) -> Option<String> {
     let mut stream = std::net::TcpStream::connect(addr).ok()?;
     drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
     drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
-
-    stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
-
-    let mut reader = BufReader::new(&mut stream);
-
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line).ok()?;
-    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
-    if !(200..300).contains(&status_code) {
-        return None;
-    }
-
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
-        if line.trim().is_empty() {
-            break;
-        }
-    }
-
-    let mut body = String::new();
-    reader.read_to_string(&mut body).ok()?;
-    Some(body)
+    send_http_request(&mut stream)
 }
 
 /// Pre-parsed HTTP response header metadata from a Docker daemon reply.
@@ -931,6 +907,7 @@ mod tests {
         assert_eq!(responses, vec!["1".to_string(), "3".to_string()]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn merge_daemon_responses_combines_multiple_runtime_payloads() {
         let merged = merge_daemon_responses([

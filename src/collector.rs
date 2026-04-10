@@ -362,33 +362,25 @@ fn load_podman_rootless_containers_by_netns(
 fn podman_overlay_container_roots(home: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
+    let mut push_unique = |path: PathBuf| {
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    };
+
     if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
-        push_unique_path(
-            &mut roots,
-            PathBuf::from(xdg_data_home).join("containers/storage/overlay-containers"),
-        );
+        push_unique(PathBuf::from(xdg_data_home).join("containers/storage/overlay-containers"));
     }
 
     if let Some(home) = home {
-        push_unique_path(
-            &mut roots,
-            home.join(".local/share/containers/storage/overlay-containers"),
-        );
+        push_unique(home.join(".local/share/containers/storage/overlay-containers"));
     }
 
-    push_unique_path(
-        &mut roots,
-        PathBuf::from("/var/lib/containers/storage/overlay-containers"),
-    );
+    push_unique(PathBuf::from(
+        "/var/lib/containers/storage/overlay-containers",
+    ));
 
     roots
-}
-
-#[cfg(target_os = "linux")]
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -420,27 +412,22 @@ fn load_podman_rootless_containers_from_overlay_root(
 
 #[cfg(target_os = "linux")]
 fn podman_storage_container_info(container: &PodmanStorageContainer) -> docker::ContainerInfo {
-    let metadata = container
+    let metadata: Option<PodmanStorageMetadata> = container
         .metadata
         .as_deref()
-        .and_then(parse_podman_storage_metadata);
+        .and_then(|raw| serde_json::from_str(raw).ok());
     let name = container
         .names
         .first()
         .cloned()
         .or_else(|| metadata.as_ref().and_then(|value| value.name.clone()))
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| short_container_id(&container.id));
+        .unwrap_or_else(|| docker::short_container_id(&container.id));
     let image = metadata
         .and_then(|value| value.image_name)
         .unwrap_or_default();
 
     docker::ContainerInfo { name, image }
-}
-
-#[cfg(target_os = "linux")]
-fn parse_podman_storage_metadata(metadata: &str) -> Option<PodmanStorageMetadata> {
-    serde_json::from_str(metadata).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -508,13 +495,8 @@ fn match_container_by_netns_paths(
 }
 
 #[cfg(target_os = "linux")]
-fn is_podman_rootlessport_process(process_name: &str) -> bool {
-    crate::types::strip_windows_exe_suffix(process_name).eq_ignore_ascii_case("rootlessport")
-}
-
-#[cfg(target_os = "linux")]
-fn short_container_id(container_id: &str) -> String {
-    container_id.chars().take(12).collect()
+const fn is_podman_rootlessport_process(process_name: &str) -> bool {
+    process_name.eq_ignore_ascii_case("rootlessport")
 }
 
 /// Resolve the best-known TCP state for a listener entry.
