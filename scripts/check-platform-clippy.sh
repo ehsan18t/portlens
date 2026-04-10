@@ -27,10 +27,15 @@ require_command rustup
 installed_targets="$(rustup target list --installed)"
 missing_targets=""
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
+host_target_supported="false"
 
 for target in $TARGETS; do
     if ! printf '%s\n' "$installed_targets" | grep -Fx "$target" >/dev/null 2>&1; then
         missing_targets="$missing_targets $target"
+    fi
+
+    if [ "$target" = "$host_target" ]; then
+        host_target_supported="true"
     fi
 done
 
@@ -47,7 +52,7 @@ if [ -n "$missing_targets" ]; then
     exit 1
 fi
 
-if printf '%s\n' "$TARGETS" | grep -Fx "$host_target" >/dev/null 2>&1; then
+if [ "$host_target_supported" = "true" ]; then
     echo "Detected supported host target: $host_target"
 else
     echo "Host target '$host_target' is not one of the supported release targets."
