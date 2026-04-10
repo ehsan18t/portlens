@@ -59,10 +59,25 @@ impl ProjectFiles {
         })
     }
 
+    /// Read the first portion of a project file as UTF-8 text.
+    ///
+    /// Caps reads at 64 KB because framework detection only needs
+    /// import statements and dependency declarations, which appear
+    /// near the top of every file. This avoids reading multi-megabyte
+    /// source files into memory for a substring scan.
     fn read_text(&self, project_root: &Path, file_name: &str) -> Option<String> {
-        self.contains_exact(file_name)
-            .then(|| std::fs::read_to_string(project_root.join(file_name)).ok())
-            .flatten()
+        use std::io::Read;
+
+        const MAX_SCAN_BYTES: u64 = 64 * 1024;
+
+        if !self.contains_exact(file_name) {
+            return None;
+        }
+
+        let file = std::fs::File::open(project_root.join(file_name)).ok()?;
+        let mut buffer = String::new();
+        file.take(MAX_SCAN_BYTES).read_to_string(&mut buffer).ok()?;
+        Some(buffer)
     }
 }
 
