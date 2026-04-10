@@ -117,9 +117,15 @@ fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
 
 /// Check whether the terminal can display UTF-8 box-drawing characters.
 ///
-/// On Windows, returns `true` only when the console output code page is
-/// 65001 (UTF-8). On all other platforms, returns `true` unconditionally
-/// because virtually all modern Unix terminals support UTF-8.
+/// On Windows the check uses several heuristics (cheapest first):
+///
+/// 1. **Windows Terminal** -- the `WT_SESSION` environment variable is
+///    set by Windows Terminal, which always supports UTF-8.
+/// 2. **Console code page** -- a code page of 65001 means the console is
+///    in explicit UTF-8 mode.
+/// 3. **Windows version** -- Windows 10 and newer (major >= 10) render
+///    UTF-8 box-drawing correctly in virtually all terminal emulators.
+///    Older releases (Windows 7/8) fall back to ASCII.
 #[cfg(windows)]
 fn terminal_supports_utf8_borders() -> bool {
     #[link(name = "kernel32")]
@@ -128,8 +134,61 @@ fn terminal_supports_utf8_borders() -> bool {
     }
 
     const UTF8_CODE_PAGE: u32 = 65001;
+
+    // Windows Terminal always supports UTF-8 box-drawing.
+    if std::env::var_os("WT_SESSION").is_some() {
+        return true;
+    }
+
     // Safety: `GetConsoleOutputCP` is a simple syscall with no preconditions.
-    (unsafe { GetConsoleOutputCP() }) == UTF8_CODE_PAGE
+    if (unsafe { GetConsoleOutputCP() }) == UTF8_CODE_PAGE {
+        return true;
+    }
+
+    // Windows 10+ (major version >= 10) renders UTF-8 correctly in most
+    // terminal emulators. Only truly ancient releases need the ASCII fallback.
+    is_windows_10_or_newer()
+}
+
+/// Query the Windows NT kernel for the OS major version.
+///
+/// Uses `RtlGetVersion` from `ntdll.dll` because the older
+/// `GetVersionExW` is subject to manifest-based compatibility shims
+/// that can report stale version numbers.
+#[cfg(windows)]
+fn is_windows_10_or_newer() -> bool {
+    // The struct layout matches OSVERSIONINFOW from the Windows SDK.
+    // The field name must match the Windows API naming convention.
+    #[allow(clippy::struct_field_names)]
+    #[repr(C)]
+    struct OsVersionInfo {
+        os_version_info_size: u32,
+        major_version: u32,
+        _minor_version: u32,
+        _build_number: u32,
+        _platform_id: u32,
+        _sz_csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+    }
+
+    let mut info = std::mem::MaybeUninit::<OsVersionInfo>::zeroed();
+    // Safety: `RtlGetVersion` writes into our stack-allocated struct and
+    // always succeeds (returns STATUS_SUCCESS == 0).
+    unsafe {
+        // The struct size is well under u32::MAX; truncation cannot happen.
+        #[allow(clippy::cast_possible_truncation)]
+        let size = std::mem::size_of::<OsVersionInfo>() as u32;
+        (*info.as_mut_ptr()).os_version_info_size = size;
+        if RtlGetVersion(info.as_mut_ptr()) == 0 {
+            return (*info.as_ptr()).major_version >= 10;
+        }
+    }
+    // If RtlGetVersion fails (should never happen), fall back to ASCII.
+    false
 }
 
 /// Check whether the terminal can display UTF-8 box-drawing characters.
