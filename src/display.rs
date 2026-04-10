@@ -1252,7 +1252,7 @@ mod tests {
             "JSON should contain port"
         );
         assert!(
-            output.contains("\"proto\": \"Tcp\""),
+            output.contains("\"proto\": \"TCP\""),
             "JSON should contain protocol"
         );
         assert!(

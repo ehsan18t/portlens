@@ -17,8 +17,10 @@ pub type AppLabel = Cow<'static, str>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Protocol {
     /// Transmission Control Protocol.
+    #[serde(rename = "TCP")]
     Tcp,
     /// User Datagram Protocol.
+    #[serde(rename = "UDP")]
     Udp,
 }
 
@@ -35,34 +37,49 @@ impl std::fmt::Display for Protocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum State {
     /// TCP socket in LISTEN state.
+    #[serde(rename = "LISTEN")]
     Listen,
     /// TCP socket in ESTABLISHED state.
+    #[serde(rename = "ESTABLISHED")]
     Established,
     /// TCP socket in SYN-SENT state.
+    #[serde(rename = "SYN_SENT")]
     SynSent,
     /// TCP socket in SYN-RECV / SYN-RECEIVED state.
+    #[serde(rename = "SYN_RECV")]
     SynReceived,
     /// TCP socket in FIN-WAIT-1 state.
+    #[serde(rename = "FIN_WAIT1")]
     FinWait1,
     /// TCP socket in FIN-WAIT-2 state.
+    #[serde(rename = "FIN_WAIT2")]
     FinWait2,
     /// TCP socket in TIME-WAIT state.
+    #[serde(rename = "TIME_WAIT")]
     TimeWait,
     /// TCP socket in CLOSE state.
+    #[serde(rename = "CLOSE")]
     Close,
     /// TCP socket in CLOSE-WAIT state.
+    #[serde(rename = "CLOSE_WAIT")]
     CloseWait,
     /// TCP socket in LAST-ACK state.
+    #[serde(rename = "LAST_ACK")]
     LastAck,
     /// TCP socket in CLOSING state.
+    #[serde(rename = "CLOSING")]
     Closing,
     /// TCP socket in NEW-SYN-RECV state.
+    #[serde(rename = "NEW_SYN_RECV")]
     NewSynReceived,
     /// Windows-specific DELETE-TCB TCP state.
+    #[serde(rename = "DELETE_TCB")]
     DeleteTcb,
     /// TCP state could not be determined reliably.
+    #[serde(rename = "UNKNOWN")]
     Unknown,
     /// State not applicable (e.g. UDP sockets).
+    #[serde(rename = "-")]
     NotApplicable,
 }
 
