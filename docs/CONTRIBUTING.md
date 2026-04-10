@@ -65,10 +65,13 @@ Releases are created via the **Release** workflow (`Actions` tab):
 
 1. Go to `Actions` > `Release` > `Run workflow`.
 2. Enter the version tag (e.g. `v0.2.0`).
-3. The workflow builds binaries for all targets, uploads `.tar.gz`, `.deb`,
+3. GitHub groups auto-generated release notes using [.github/release.yml](.github/release.yml).
+   Apply the appropriate PR labels before merging if you want a change to land
+   in a specific section.
+4. The workflow builds binaries for all targets, uploads `.tar.gz`, `.deb`,
   `.rpm`, and raw `.exe` assets, and creates a draft release with
   auto-generated release notes.
-4. Review and publish the draft on the GitHub Releases page.
+5. Review and publish the draft on the GitHub Releases page.
 
 ---
 
