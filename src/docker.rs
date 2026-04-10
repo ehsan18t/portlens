@@ -247,6 +247,13 @@ fn fetch_containers_json() -> Option<String> {
 fn fetch_containers_json() -> Option<String> {
     let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
 
+    // Honour DOCKER_HOST when it points at a named pipe (npipe://).
+    if let Some(path) = docker_host_npipe_path()
+        && let Some(body) = fetch_named_pipe_json(&path, deadline)
+    {
+        return Some(body);
+    }
+
     let pipe_paths = [
         r"\\.\pipe\docker_engine",
         r"\\.\pipe\podman-machine-default",
@@ -281,12 +288,19 @@ fn fetch_named_pipe_json(path: &str, deadline: std::time::Instant) -> Option<Str
 
 #[cfg(unix)]
 fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
-    let mut socket_paths = vec![
+    let mut socket_paths = Vec::new();
+
+    // Honour DOCKER_HOST when it points at a Unix socket (unix://).
+    if let Some(path) = docker_host_unix_path() {
+        socket_paths.push(path);
+    }
+
+    socket_paths.extend([
         "/var/run/docker.sock".to_string(),
         format!("/run/user/{uid}/docker.sock"),
         format!("/run/user/{uid}/podman/podman.sock"),
         "/run/podman/podman.sock".to_string(),
-    ];
+    ]);
 
     if let Some(home) = home {
         socket_paths.push(home.join(".docker/run/docker.sock").display().to_string());
@@ -395,6 +409,29 @@ fn send_http_request_windows(
             Err(_) => return None,
         }
     }
+}
+
+/// Extract a Unix socket path from the `DOCKER_HOST` environment variable.
+///
+/// Returns the path suffix when `DOCKER_HOST` starts with `unix://`,
+/// or `None` if the variable is unset or uses a different scheme.
+#[cfg(unix)]
+fn docker_host_unix_path() -> Option<String> {
+    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+    let path = docker_host.strip_prefix("unix://")?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// Extract a named pipe path from the `DOCKER_HOST` environment variable.
+///
+/// Returns the pipe path (with forward slashes replaced by backslashes)
+/// when `DOCKER_HOST` starts with `npipe://`, or `None` if the variable
+/// is unset or uses a different scheme.
+#[cfg(windows)]
+fn docker_host_npipe_path() -> Option<String> {
+    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+    let raw = docker_host.strip_prefix("npipe://")?;
+    (!raw.is_empty()).then(|| raw.replace('/', "\\"))
 }
 
 /// Pre-parsed HTTP response header metadata from a Docker daemon reply.
