@@ -95,6 +95,11 @@ cargo build --release
 # Binary is at: target/release/portview (or portview.exe on Windows)
 ```
 
+Windows builds embed an Explorer icon when `assets/icon.ico` is present. The
+current `assets/icon.png` is source artwork only. Add a multi-size `.ico` file
+at `assets/icon.ico` with at least `16x16`, `32x32`, `48x48`, and `256x256`
+images so Windows can select the best size for Explorer and shell views.
+
 ### Option C: Install via Cargo
 
 ```bash
@@ -209,6 +214,10 @@ The local cross-target Clippy helpers in `scripts/check-platform-clippy.sh` and
 `scripts/check-platform-clippy.ps1` lint the host target with full coverage and
 lint the other supported target's library and binary code so Linux-only and
 Windows-only cfg issues fail locally instead of waiting for CI.
+
+Windows executable icon embedding is handled in `build.rs` with the
+`winresource` build dependency. If `assets/icon.ico` is missing, Windows builds
+still succeed but emit a warning instead of embedding an icon.
 
 CI workflow actions are pinned to full commit SHAs for supply-chain security;
 preserve the trailing version comments when updating them.

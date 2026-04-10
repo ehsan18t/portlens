@@ -24,6 +24,11 @@ cd portview
 cargo build
 ```
 
+Windows executable icon embedding expects `assets/icon.ico`. Keep source art in
+`assets/icon.png` if you want, but the Windows resource step only embeds `.ico`
+files. Use a multi-size `.ico` that includes at least `16x16`, `32x32`,
+`48x48`, and `256x256` images.
+
 ### Install Git Hooks
 
 **Windows (PowerShell):**
@@ -69,6 +74,10 @@ so cross-platform issues (Linux + Windows matrix) are caught before a PR is merg
 Workflow dependencies in `.github/workflows/` are pinned to full commit SHAs.
 When updating an action, keep the trailing version comment (for example `# v6`)
 so reviewers can see the intended upstream release at a glance.
+
+The current icon integration is intentionally Windows-only. Linux packages stay
+CLI-only and do not install a desktop entry, so shipping only an icon image
+would not surface a meaningful application icon in Linux menus.
 
 ### Releasing
 

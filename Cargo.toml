@@ -43,6 +43,9 @@ libc = "0.2"
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
 
+[build-dependencies]
+winresource = "0.1"
+
 [[bench]]
 name = "benchmarks"
 harness = false
