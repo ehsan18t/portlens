@@ -60,9 +60,10 @@ struct CollectContext<'a> {
 ///
 /// Docker daemon probing spawns background threads that are not joined
 /// on return. This is safe for short-lived CLI processes but means this
-/// function is **not suitable for long-running daemons**: if the Docker
-/// socket blocks, the probe thread will leak. Callers embedding this in
-/// a persistent service should add their own timeout wrapper.
+/// function is **not suitable for long-running daemons**: if low-level
+/// daemon probing stalls unexpectedly, the detached probe thread can
+/// outlive the caller. Callers embedding this in a persistent service
+/// should add their own cancellation or timeout wrapper.
 pub fn collect() -> Result<Vec<PortEntry>> {
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.

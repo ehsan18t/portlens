@@ -33,8 +33,8 @@ const PROJECT_MARKER_EXTENSIONS: &[&str] = &["csproj", "fsproj"];
 /// Maximum number of parent directories to traverse before giving up.
 ///
 /// Prevents excessive I/O for processes with deeply nested or unusual
-/// working directories (e.g. `/var/run/service/nested/deep/path`).
-pub(crate) const MAX_WALK_DEPTH: usize = 16;
+/// working directories while still covering common monorepo nesting.
+pub(crate) const MAX_WALK_DEPTH: usize = 64;
 
 /// Iterate ancestor directories starting from `start`, walking upward.
 ///
@@ -290,6 +290,25 @@ mod tests {
         assert!(
             result.is_none(),
             "should NOT match stray marker in the home directory"
+        );
+    }
+
+    #[test]
+    fn walk_finds_marker_at_max_depth_boundary() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("package.json"), "").unwrap();
+
+        let mut deep = dir.path().to_path_buf();
+        for i in 0..MAX_WALK_DEPTH - 1 {
+            deep = deep.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+
+        let result = find_from_dir(&deep, None);
+        assert_eq!(
+            result.as_deref(),
+            Some(dir.path()),
+            "walk should still find a marker at the depth boundary"
         );
     }
 

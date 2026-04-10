@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader, Read as _};
+use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
@@ -24,6 +24,13 @@ use std::fs;
 use serde::Deserialize;
 
 use crate::types::Protocol;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransferEncoding {
+    Identity,
+    Chunked,
+    Unsupported,
+}
 
 #[derive(Deserialize)]
 struct DockerPort<'a> {
@@ -615,6 +622,7 @@ fn fetch_unix_socket_json(path: &Path) -> Option<String> {
     let mut stream = UnixStream::connect(path).ok()?;
     // Best-effort timeout; proceed even if it cannot be set.
     drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
+    drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
     send_http_request(&mut stream)
 }
 
@@ -623,16 +631,19 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
 
     let mut reader = BufReader::new(stream);
 
-    // Read and validate the HTTP status line (e.g. "HTTP/1.0 200 OK").
-    // Bail out early on non-2xx responses to avoid parsing error bodies.
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line).ok()?;
-    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
-    if !(200..300).contains(&status_code) {
+    let headers = read_response_headers(&mut reader)?;
+    if !headers.status_ok {
         return None;
     }
 
-    // Skip remaining response headers (read until empty line)
+    read_response_body(&mut reader, &headers)
+}
+
+fn read_response_headers(reader: &mut impl BufRead) -> Option<ParsedHeaders> {
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).ok()?;
+
+    let mut header_lines = Vec::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -642,12 +653,75 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
         if line.trim().is_empty() {
             break;
         }
+        header_lines.push(line.trim_end_matches(['\r', '\n']).to_string());
     }
 
-    // Read the response body
-    let mut body = String::new();
-    reader.read_to_string(&mut body).ok()?;
-    Some(body)
+    parse_header_metadata(&status_line, header_lines.iter().map(String::as_str), 0)
+}
+
+fn read_response_body(reader: &mut impl BufRead, headers: &ParsedHeaders) -> Option<String> {
+    match headers.transfer_encoding {
+        TransferEncoding::Identity => {
+            let mut body = Vec::new();
+            if let Some(content_length) = headers.content_length {
+                body.resize(content_length, 0);
+                reader.read_exact(&mut body).ok()?;
+            } else {
+                reader.read_to_end(&mut body).ok()?;
+            }
+            String::from_utf8(body).ok()
+        }
+        TransferEncoding::Chunked => {
+            let decoded = read_chunked_body(reader)?;
+            String::from_utf8(decoded).ok()
+        }
+        TransferEncoding::Unsupported => None,
+    }
+}
+
+fn read_chunked_body(reader: &mut impl BufRead) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+
+    loop {
+        let mut size_line = String::new();
+        if reader.read_line(&mut size_line).ok()? == 0 {
+            return None;
+        }
+
+        let chunk_size = parse_chunk_size_line(&size_line)?;
+        if chunk_size == 0 {
+            consume_chunked_trailers(reader)?;
+            return Some(body);
+        }
+
+        let start = body.len();
+        body.resize(start + chunk_size, 0);
+        reader.read_exact(&mut body[start..]).ok()?;
+
+        let mut chunk_terminator = [0_u8; 2];
+        reader.read_exact(&mut chunk_terminator).ok()?;
+        if chunk_terminator != *b"\r\n" {
+            return None;
+        }
+    }
+}
+
+fn parse_chunk_size_line(line: &str) -> Option<usize> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let size = trimmed.split_once(';').map_or(trimmed, |(value, _)| value);
+    usize::from_str_radix(size.trim(), 16).ok()
+}
+
+fn consume_chunked_trailers(reader: &mut impl BufRead) -> Option<()> {
+    loop {
+        let mut trailer_line = String::new();
+        if reader.read_line(&mut trailer_line).ok()? == 0 {
+            return None;
+        }
+        if trailer_line.trim().is_empty() {
+            return Some(());
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -664,26 +738,22 @@ fn send_http_request_windows(
     let mut headers: Option<ParsedHeaders> = None;
 
     loop {
-        // Once headers are parsed, only check whether enough body bytes
-        // have arrived. This avoids re-validating UTF-8 and re-scanning
-        // for the header/body boundary on every chunk (O(N) vs O(N^2)).
+        // Once headers are parsed, continue extracting against the
+        // buffered body instead of reparsing the header boundary.
         if let Some(ref hdr) = headers {
-            if let Some(cl) = hdr.content_length
-                && response.len() >= hdr.body_offset + cl
-            {
-                let text = std::str::from_utf8(&response).ok()?;
-                return Some(text[hdr.body_offset..hdr.body_offset + cl].to_string());
+            match extract_http_body_from_buffer(&response, hdr, false) {
+                Ok(Some(body)) => return Some(body),
+                Ok(None) => {}
+                Err(()) => return None,
             }
         } else if let Some(hdr) = parse_response_headers(&response) {
             if !hdr.status_ok {
                 return None;
             }
-            // Content-Length present and already fully buffered?
-            if let Some(cl) = hdr.content_length
-                && response.len() >= hdr.body_offset + cl
-            {
-                let text = std::str::from_utf8(&response).ok()?;
-                return Some(text[hdr.body_offset..hdr.body_offset + cl].to_string());
+            match extract_http_body_from_buffer(&response, &hdr, false) {
+                Ok(Some(body)) => return Some(body),
+                Ok(None) => {}
+                Err(()) => return None,
             }
             headers = Some(hdr);
         }
@@ -754,21 +824,94 @@ fn docker_host_tcp_addr() -> Option<String> {
 ///
 /// Used when `DOCKER_HOST` is set to `tcp://host:port`.
 fn fetch_tcp_json(addr: &str) -> Option<String> {
-    let mut stream = std::net::TcpStream::connect(addr).ok()?;
+    let mut stream = connect_tcp_stream(addr)?;
     drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
     drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
     send_http_request(&mut stream)
 }
 
+fn connect_tcp_stream(addr: &str) -> Option<std::net::TcpStream> {
+    use std::net::ToSocketAddrs;
+
+    addr.to_socket_addrs().ok()?.find_map(|socket_addr| {
+        std::net::TcpStream::connect_timeout(&socket_addr, DAEMON_TIMEOUT).ok()
+    })
+}
+
 /// Pre-parsed HTTP response header metadata from a Docker daemon reply.
-#[cfg(any(windows, test))]
 struct ParsedHeaders {
     /// Whether the HTTP status code is 2xx.
     status_ok: bool,
     /// Byte offset where the response body begins (after `\r\n\r\n`).
+    #[cfg(any(windows, test))]
     body_offset: usize,
     /// Value of the `Content-Length` header, if present.
     content_length: Option<usize>,
+    /// Transfer framing used for the response body.
+    transfer_encoding: TransferEncoding,
+}
+
+fn parse_header_metadata<'a>(
+    status_line: &str,
+    header_lines: impl Iterator<Item = &'a str>,
+    body_offset: usize,
+) -> Option<ParsedHeaders> {
+    #[cfg(not(any(windows, test)))]
+    let _ = body_offset;
+
+    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
+    let status_ok = (200..300).contains(&status_code);
+
+    let mut content_length = None;
+    let mut transfer_encoding = TransferEncoding::Identity;
+
+    for line in header_lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+
+        if name.eq_ignore_ascii_case("Content-Length") {
+            content_length = value.trim().parse().ok();
+            continue;
+        }
+
+        if name.eq_ignore_ascii_case("Transfer-Encoding") {
+            transfer_encoding = parse_transfer_encoding(value);
+        }
+    }
+
+    Some(ParsedHeaders {
+        status_ok,
+        #[cfg(any(windows, test))]
+        body_offset,
+        content_length,
+        transfer_encoding,
+    })
+}
+
+fn parse_transfer_encoding(value: &str) -> TransferEncoding {
+    let mut saw_chunked = false;
+    let mut saw_unsupported = false;
+
+    for coding in value
+        .split(',')
+        .map(str::trim)
+        .filter(|coding| !coding.is_empty())
+    {
+        if coding.eq_ignore_ascii_case("chunked") {
+            saw_chunked = true;
+        } else if !coding.eq_ignore_ascii_case("identity") {
+            saw_unsupported = true;
+        }
+    }
+
+    if saw_unsupported {
+        TransferEncoding::Unsupported
+    } else if saw_chunked {
+        TransferEncoding::Chunked
+    } else {
+        TransferEncoding::Identity
+    }
 }
 
 /// Try to locate and parse the HTTP response headers in `response`.
@@ -783,16 +926,7 @@ fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
 
     let mut header_lines = text[..headers_end].split("\r\n");
     let status_line = header_lines.next()?;
-    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
-    let status_ok = (200..300).contains(&status_code);
-
-    let content_length = parse_content_length(header_lines);
-
-    Some(ParsedHeaders {
-        status_ok,
-        body_offset,
-        content_length,
-    })
+    parse_header_metadata(status_line, header_lines, body_offset)
 }
 
 /// Extract the body from a fully received (EOF) response, using
@@ -800,15 +934,9 @@ fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
 #[cfg(any(windows, test))]
 fn extract_body_at_eof(response: &[u8], headers: Option<&ParsedHeaders>) -> Option<String> {
     if let Some(hdr) = headers {
-        if !hdr.status_ok {
-            return None;
-        }
-        let text = std::str::from_utf8(response).ok()?;
-        let body = &text[hdr.body_offset..];
-        if let Some(cl) = hdr.content_length {
-            return (body.len() >= cl).then(|| body[..cl].to_string());
-        }
-        return Some(body.to_string());
+        return extract_http_body_from_buffer(response, hdr, true)
+            .ok()
+            .flatten();
     }
     // Headers not yet parsed at EOF: fall back to a full single-pass parse.
     try_extract_http_body(response, true)
@@ -817,27 +945,101 @@ fn extract_body_at_eof(response: &[u8], headers: Option<&ParsedHeaders>) -> Opti
 #[cfg(any(windows, test))]
 fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
     let hdr = parse_response_headers(response)?;
-    if !hdr.status_ok {
-        return None;
-    }
-
-    let text = std::str::from_utf8(response).ok()?;
-    let body = &text[hdr.body_offset..];
-    if let Some(content_length) = hdr.content_length {
-        return (body.len() >= content_length).then(|| body[..content_length].to_string());
-    }
-
-    eof.then(|| body.to_string())
+    extract_http_body_from_buffer(response, &hdr, eof)
+        .ok()
+        .flatten()
 }
 
 #[cfg(any(windows, test))]
-fn parse_content_length<'a>(mut header_lines: impl Iterator<Item = &'a str>) -> Option<usize> {
-    header_lines.find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("Content-Length")
-            .then(|| value.trim().parse().ok())
-            .flatten()
-    })
+fn extract_http_body_from_buffer(
+    response: &[u8],
+    headers: &ParsedHeaders,
+    eof: bool,
+) -> Result<Option<String>, ()> {
+    if !headers.status_ok {
+        return Err(());
+    }
+
+    let body = response.get(headers.body_offset..).ok_or(())?;
+    match headers.transfer_encoding {
+        TransferEncoding::Identity => {
+            if let Some(content_length) = headers.content_length {
+                if body.len() < content_length {
+                    return Ok(None);
+                }
+                return String::from_utf8(body[..content_length].to_vec())
+                    .map(Some)
+                    .map_err(|_| ());
+            }
+
+            if eof {
+                return String::from_utf8(body.to_vec()).map(Some).map_err(|_| ());
+            }
+
+            Ok(None)
+        }
+        TransferEncoding::Chunked => match decode_chunked_body(body) {
+            Ok(Some(decoded)) => String::from_utf8(decoded).map(Some).map_err(|_| ()),
+            Ok(None) => Ok(None),
+            Err(()) => Err(()),
+        },
+        TransferEncoding::Unsupported => Err(()),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn decode_chunked_body(body: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    let mut decoded = Vec::new();
+    let mut offset = 0;
+
+    loop {
+        let Some(line_end) = find_crlf(body, offset) else {
+            return Ok(None);
+        };
+
+        let size_line = std::str::from_utf8(&body[offset..line_end]).map_err(|_| ())?;
+        let chunk_size = parse_chunk_size_line(size_line).ok_or(())?;
+        offset = line_end + 2;
+
+        if chunk_size == 0 {
+            return parse_chunked_trailers(body, offset)
+                .map(|complete| complete.then_some(decoded));
+        }
+
+        let chunk_end = offset.checked_add(chunk_size).ok_or(())?;
+        let terminator_end = chunk_end.checked_add(2).ok_or(())?;
+        if body.len() < terminator_end {
+            return Ok(None);
+        }
+        if &body[chunk_end..terminator_end] != b"\r\n" {
+            return Err(());
+        }
+
+        decoded.extend_from_slice(&body[offset..chunk_end]);
+        offset = terminator_end;
+    }
+}
+
+#[cfg(any(windows, test))]
+fn parse_chunked_trailers(body: &[u8], offset: usize) -> Result<bool, ()> {
+    let trailers = body.get(offset..).ok_or(())?;
+    if trailers.starts_with(b"\r\n") {
+        return Ok(true);
+    }
+
+    if trailers.windows(4).any(|window| window == b"\r\n\r\n") {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+#[cfg(any(windows, test))]
+fn find_crlf(body: &[u8], offset: usize) -> Option<usize> {
+    body.get(offset..)?
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .map(|position| offset + position)
 }
 
 #[cfg(windows)]
@@ -1085,6 +1287,27 @@ mod tests {
     }
 
     #[test]
+    fn http_body_parser_decodes_chunked_payloads() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n";
+        assert_eq!(
+            try_extract_http_body(response, false).as_deref(),
+            Some("[]")
+        );
+    }
+
+    #[test]
+    fn http_body_parser_waits_for_complete_chunked_payload() {
+        let partial = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n";
+        assert!(try_extract_http_body(partial, false).is_none());
+    }
+
+    #[test]
+    fn http_body_parser_rejects_unsupported_transfer_encoding() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n";
+        assert!(try_extract_http_body(response, false).is_none());
+    }
+
+    #[test]
     fn parse_response_headers_returns_none_for_incomplete_headers() {
         let partial = b"HTTP/1.0 200 OK\r\nContent-Len";
         assert!(
@@ -1099,7 +1322,15 @@ mod tests {
         let hdr = parse_response_headers(response).expect("headers should parse");
         assert!(hdr.status_ok, "status should be ok");
         assert_eq!(hdr.content_length, Some(42));
+        assert_eq!(hdr.transfer_encoding, TransferEncoding::Identity);
         assert_eq!(hdr.body_offset, 39, "body should start after CRLFCRLF");
+    }
+
+    #[test]
+    fn parse_response_headers_detects_chunked_transfer_encoding() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let hdr = parse_response_headers(response).expect("headers should parse");
+        assert_eq!(hdr.transfer_encoding, TransferEncoding::Chunked);
     }
 
     #[test]
