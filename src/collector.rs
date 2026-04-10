@@ -12,8 +12,6 @@ use std::ffi::OsString;
 #[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(unix)]
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
