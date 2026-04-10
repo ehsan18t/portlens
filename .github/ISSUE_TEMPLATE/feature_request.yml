@@ -1,0 +1,54 @@
+name: Feature Request
+description: Suggest a new feature or improvement for portview
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to make portview better? Describe it below!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: >
+        What problem does this feature solve? Example: "I'm always frustrated
+        when..."
+      placeholder: When monitoring multiple services, I need to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you want to happen and how it should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative solutions or workarounds you have considered.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Area of impact
+      options:
+        - Output / display
+        - Filtering / flags
+        - Docker / container support
+        - Performance
+        - Platform support
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples from other tools, or references.
