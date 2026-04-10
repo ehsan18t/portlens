@@ -28,6 +28,22 @@ pub struct DisplayOptions {
 /// Table style and column selection are controlled by `opts`.
 /// Returns an error if writing to stdout fails (e.g. broken pipe).
 pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
+    write_table(&mut io::stdout().lock(), entries, opts)
+}
+
+/// Print the entries as a JSON array to stdout.
+///
+/// Returns an error if serialization or writing to stdout fails.
+pub fn print_json(entries: &[PortEntry]) -> Result<()> {
+    write_json(&mut io::stdout().lock(), entries)
+}
+
+/// Render entries as a table to the given writer.
+fn write_table(
+    writer: &mut impl Write,
+    entries: &[PortEntry],
+    opts: &DisplayOptions,
+) -> Result<()> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
@@ -85,17 +101,15 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
         }
     }
 
-    writeln!(io::stdout().lock(), "{table}").context("failed to write table to stdout")?;
+    writeln!(writer, "{table}").context("failed to write table to stdout")?;
     Ok(())
 }
 
-/// Print the entries as a JSON array to stdout.
-///
-/// Returns an error if serialization or writing to stdout fails.
-pub fn print_json(entries: &[PortEntry]) -> Result<()> {
+/// Render entries as a JSON array to the given writer.
+fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
     let json =
         serde_json::to_string_pretty(entries).context("failed to serialize entries to JSON")?;
-    writeln!(io::stdout().lock(), "{json}").context("failed to write JSON to stdout")?;
+    writeln!(writer, "{json}").context("failed to write JSON to stdout")?;
     Ok(())
 }
 
@@ -128,7 +142,25 @@ fn truncate_process_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
     use super::*;
+    use crate::types::{Protocol, State};
+
+    fn sample_entry() -> PortEntry {
+        PortEntry {
+            port: 8080,
+            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            proto: Protocol::Tcp,
+            state: State::Listen,
+            pid: 1234,
+            process: "node".to_string(),
+            user: "user".to_string(),
+            project: Some("my-app".to_string()),
+            app: Some("Next.js"),
+            uptime_secs: Some(3600),
+        }
+    }
 
     #[test]
     fn short_name_unchanged() {
@@ -170,5 +202,135 @@ mod tests {
             result.ends_with('\u{2026}'),
             "truncated multi-byte name should end with ellipsis"
         );
+    }
+
+    #[test]
+    fn write_json_contains_expected_fields() {
+        let entries = vec![sample_entry()];
+        let mut buffer = Vec::new();
+        write_json(&mut buffer, &entries).expect("write_json should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        assert!(
+            output.contains("\"port\": 8080"),
+            "JSON should contain port"
+        );
+        assert!(
+            output.contains("\"proto\": \"Tcp\""),
+            "JSON should contain protocol"
+        );
+        assert!(
+            output.contains("\"process\": \"node\""),
+            "JSON should contain process name"
+        );
+        assert!(
+            output.contains("\"project\": \"my-app\""),
+            "JSON should contain project name"
+        );
+        assert!(
+            output.contains("\"app\": \"Next.js\""),
+            "JSON should contain app label"
+        );
+    }
+
+    #[test]
+    fn write_json_empty_entries_produces_empty_array() {
+        let mut buffer = Vec::new();
+        write_json(&mut buffer, &[]).expect("write_json should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        assert_eq!(output.trim(), "[]", "empty entries should produce []");
+    }
+
+    #[test]
+    fn write_table_default_columns_include_expected_headers() {
+        let entries = vec![sample_entry()];
+        let opts = DisplayOptions {
+            show_header: true,
+            full: false,
+            compact: false,
+        };
+        let mut buffer = Vec::new();
+        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        for header in [
+            "PORT", "PROTO", "ADDRESS", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
+        ] {
+            assert!(
+                output.contains(header),
+                "default table should contain {header} header"
+            );
+        }
+        assert!(
+            !output.contains("STATE"),
+            "default table should not contain STATE column"
+        );
+        assert!(
+            !output.contains("USER"),
+            "default table should not contain USER column"
+        );
+    }
+
+    #[test]
+    fn write_table_full_columns_include_state_and_user() {
+        let entries = vec![sample_entry()];
+        let opts = DisplayOptions {
+            show_header: true,
+            full: true,
+            compact: false,
+        };
+        let mut buffer = Vec::new();
+        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        assert!(
+            output.contains("STATE"),
+            "full table should contain STATE column"
+        );
+        assert!(
+            output.contains("USER"),
+            "full table should contain USER column"
+        );
+    }
+
+    #[test]
+    fn write_table_no_header_omits_column_names() {
+        let entries = vec![sample_entry()];
+        let opts = DisplayOptions {
+            show_header: false,
+            full: false,
+            compact: false,
+        };
+        let mut buffer = Vec::new();
+        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        assert!(
+            !output.contains("PROTO"),
+            "no-header should omit column names"
+        );
+    }
+
+    #[test]
+    fn write_table_renders_entry_values() {
+        let entries = vec![sample_entry()];
+        let opts = DisplayOptions {
+            show_header: false,
+            full: false,
+            compact: true,
+        };
+        let mut buffer = Vec::new();
+        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        assert!(output.contains("8080"), "table should contain port number");
+        assert!(output.contains("TCP"), "table should contain protocol");
+        assert!(output.contains("node"), "table should contain process name");
+        assert!(
+            output.contains("my-app"),
+            "table should contain project name"
+        );
+        assert!(output.contains("Next.js"), "table should contain app label");
+        assert!(output.contains("1h"), "table should contain uptime");
     }
 }
