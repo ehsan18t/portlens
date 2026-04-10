@@ -7,8 +7,7 @@
 //! with zero additional dependencies.
 
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -232,6 +231,11 @@ where
 fn fetch_containers_json() -> Option<String> {
     use std::os::unix::net::UnixStream;
 
+    // Honour DOCKER_HOST when it specifies a TCP address.
+    if let Some(addr) = docker_host_tcp_addr() {
+        return fetch_tcp_json(&addr);
+    }
+
     // Safety: getuid() is a simple syscall with no preconditions.
     let uid = unsafe { libc::getuid() };
 
@@ -246,6 +250,11 @@ fn fetch_containers_json() -> Option<String> {
 #[cfg(windows)]
 fn fetch_containers_json() -> Option<String> {
     let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
+
+    // Honour DOCKER_HOST when it specifies a TCP address.
+    if let Some(addr) = docker_host_tcp_addr() {
+        return fetch_tcp_json(&addr);
+    }
 
     // Honour DOCKER_HOST when it points at a named pipe (npipe://).
     if let Some(path) = docker_host_npipe_path()
@@ -311,8 +320,6 @@ fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
 
 #[cfg(unix)]
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
-    use std::io::Read as _;
-
     stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
     let mut reader = BufReader::new(stream);
@@ -432,6 +439,51 @@ fn docker_host_npipe_path() -> Option<String> {
     let docker_host = std::env::var("DOCKER_HOST").ok()?;
     let raw = docker_host.strip_prefix("npipe://")?;
     (!raw.is_empty()).then(|| raw.replace('/', "\\"))
+}
+
+/// Extract a TCP address from the `DOCKER_HOST` environment variable.
+///
+/// Returns the `host:port` string when `DOCKER_HOST` starts with `tcp://`,
+/// or `None` if the variable is unset or uses a different scheme.
+fn docker_host_tcp_addr() -> Option<String> {
+    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+    let addr = docker_host.strip_prefix("tcp://")?;
+    (!addr.is_empty()).then(|| addr.to_string())
+}
+
+/// Connect to a Docker/Podman daemon over plain TCP and fetch container JSON.
+///
+/// Used when `DOCKER_HOST` is set to `tcp://host:port`.
+fn fetch_tcp_json(addr: &str) -> Option<String> {
+    let mut stream = std::net::TcpStream::connect(addr).ok()?;
+    drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
+    drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
+
+    stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
+
+    let mut reader = BufReader::new(&mut stream);
+
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).ok()?;
+    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
+    if !(200..300).contains(&status_code) {
+        return None;
+    }
+
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+
+    let mut body = String::new();
+    reader.read_to_string(&mut body).ok()?;
+    Some(body)
 }
 
 /// Pre-parsed HTTP response header metadata from a Docker daemon reply.
