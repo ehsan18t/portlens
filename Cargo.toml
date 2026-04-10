@@ -53,3 +53,25 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# cargo-deb metadata for Debian/Ubuntu package generation.
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/portview", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/portview/", "644"],
+    ["LICENSE", "usr/share/doc/portview/", "644"],
+]
+extended-description = """\
+portview lists open network ports with their owning processes, project roots,
+framework labels, and Docker container names. Designed for developers who need
+instant visibility into what is listening on their machine."""
+
+# cargo-generate-rpm metadata for Fedora/RHEL package generation.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/portview", dest = "/usr/bin/portview", mode = "0755" },
+    { source = "README.md", dest = "/usr/share/doc/portview/README.md", mode = "0644" },
+    { source = "LICENSE", dest = "/usr/share/doc/portview/LICENSE", mode = "0644" },
+]
