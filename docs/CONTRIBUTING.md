@@ -24,6 +24,11 @@ cd portview
 cargo build
 ```
 
+Release builds use a size-focused Cargo profile (`opt-level = "z"`, LTO,
+single codegen unit, symbol stripping, and `panic = "abort"`). Keep that bias
+unless a maintainer explicitly decides a runtime-performance regression is more
+important than artifact size.
+
 Windows executable icon embedding expects `assets/icon.ico`. Keep source art in
 `assets/icon.png` if you want, but the Windows resource step only embeds `.ico`
 files. Use a multi-size `.ico` that includes at least `16x16`, `32x32`,
