@@ -564,9 +564,12 @@ fn normalize_container_name(name: &str) -> Option<String> {
 }
 
 /// Truncate a full container ID to its 12-character short form.
+///
+/// Docker/Podman container IDs are hex-encoded (ASCII-only), so byte
+/// length equals character count and a byte slice is safe.
 #[must_use]
 pub fn short_container_id(id: &str) -> String {
-    id.chars().take(12).collect()
+    id.get(..12).unwrap_or(id).to_string()
 }
 
 #[cfg(unix)]
