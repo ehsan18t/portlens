@@ -341,23 +341,44 @@ fn send_http_request_windows(
 
     let mut response = Vec::new();
     let mut chunk = [0_u8; 8192];
+    let mut headers: Option<ParsedHeaders> = None;
 
     loop {
-        if let Some(body) = try_extract_http_body(&response, false) {
-            return Some(body);
+        // Once headers are parsed, only check whether enough body bytes
+        // have arrived. This avoids re-validating UTF-8 and re-scanning
+        // for the header/body boundary on every chunk (O(N) vs O(N^2)).
+        if let Some(ref hdr) = headers {
+            if let Some(cl) = hdr.content_length
+                && response.len() >= hdr.body_offset + cl
+            {
+                let text = std::str::from_utf8(&response).ok()?;
+                return Some(text[hdr.body_offset..hdr.body_offset + cl].to_string());
+            }
+        } else if let Some(hdr) = parse_response_headers(&response) {
+            if !hdr.status_ok {
+                return None;
+            }
+            // Content-Length present and already fully buffered?
+            if let Some(cl) = hdr.content_length
+                && response.len() >= hdr.body_offset + cl
+            {
+                let text = std::str::from_utf8(&response).ok()?;
+                return Some(text[hdr.body_offset..hdr.body_offset + cl].to_string());
+            }
+            headers = Some(hdr);
         }
 
         let available = match peek_available_bytes(stream) {
             Some(available) => available,
             None if last_os_error_is(ERROR_BROKEN_PIPE) => {
-                return try_extract_http_body(&response, true);
+                return extract_body_at_eof(&response, headers.as_ref());
             }
             None => return None,
         };
 
         if available == 0 {
             if std::time::Instant::now() >= deadline {
-                return try_extract_http_body(&response, true);
+                return extract_body_at_eof(&response, headers.as_ref());
             }
             std::thread::sleep(PIPE_POLL_INTERVAL);
             continue;
@@ -366,30 +387,80 @@ fn send_http_request_windows(
         let max_chunk = u32::try_from(chunk.len()).ok()?;
         let read_len = usize::try_from(available.min(max_chunk)).ok()?;
         match stream.read(&mut chunk[..read_len]) {
-            Ok(0) => return try_extract_http_body(&response, true),
+            Ok(0) => return extract_body_at_eof(&response, headers.as_ref()),
             Ok(read) => response.extend_from_slice(&chunk[..read]),
             Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => {
-                return try_extract_http_body(&response, true);
+                return extract_body_at_eof(&response, headers.as_ref());
             }
             Err(_) => return None,
         }
     }
 }
 
+/// Pre-parsed HTTP response header metadata from a Docker daemon reply.
 #[cfg(any(windows, test))]
-fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
+struct ParsedHeaders {
+    /// Whether the HTTP status code is 2xx.
+    status_ok: bool,
+    /// Byte offset where the response body begins (after `\r\n\r\n`).
+    body_offset: usize,
+    /// Value of the `Content-Length` header, if present.
+    content_length: Option<usize>,
+}
+
+/// Try to locate and parse the HTTP response headers in `response`.
+///
+/// Returns `None` if the header/body boundary (`\r\n\r\n`) has not yet
+/// been received. Performs a single scan over the accumulated buffer.
+#[cfg(any(windows, test))]
+fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
     let text = std::str::from_utf8(response).ok()?;
     let headers_end = text.find("\r\n\r\n")?;
+    let body_offset = headers_end + 4;
 
     let mut header_lines = text[..headers_end].split("\r\n");
     let status_line = header_lines.next()?;
     let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
-    if !(200..300).contains(&status_code) {
+    let status_ok = (200..300).contains(&status_code);
+
+    let content_length = parse_content_length(header_lines);
+
+    Some(ParsedHeaders {
+        status_ok,
+        body_offset,
+        content_length,
+    })
+}
+
+/// Extract the body from a fully received (EOF) response, using
+/// pre-parsed headers if available, or falling back to a full parse.
+#[cfg(any(windows, test))]
+fn extract_body_at_eof(response: &[u8], headers: Option<&ParsedHeaders>) -> Option<String> {
+    if let Some(hdr) = headers {
+        if !hdr.status_ok {
+            return None;
+        }
+        let text = std::str::from_utf8(response).ok()?;
+        let body = &text[hdr.body_offset..];
+        if let Some(cl) = hdr.content_length {
+            return (body.len() >= cl).then(|| body[..cl].to_string());
+        }
+        return Some(body.to_string());
+    }
+    // Headers not yet parsed at EOF: fall back to a full single-pass parse.
+    try_extract_http_body(response, true)
+}
+
+#[cfg(any(windows, test))]
+fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
+    let hdr = parse_response_headers(response)?;
+    if !hdr.status_ok {
         return None;
     }
 
-    let body = &text[headers_end + 4..];
-    if let Some(content_length) = parse_content_length(header_lines) {
+    let text = std::str::from_utf8(response).ok()?;
+    let body = &text[hdr.body_offset..];
+    if let Some(content_length) = hdr.content_length {
         return (body.len() >= content_length).then(|| body[..content_length].to_string());
     }
 
@@ -618,6 +689,46 @@ mod tests {
     fn http_body_parser_accepts_eof_without_content_length() {
         let response = b"HTTP/1.0 200 OK\r\nServer: docker\r\n\r\n[]";
         assert_eq!(try_extract_http_body(response, true).as_deref(), Some("[]"));
+    }
+
+    #[test]
+    fn parse_response_headers_returns_none_for_incomplete_headers() {
+        let partial = b"HTTP/1.0 200 OK\r\nContent-Len";
+        assert!(
+            parse_response_headers(partial).is_none(),
+            "incomplete headers should return None"
+        );
+    }
+
+    #[test]
+    fn parse_response_headers_extracts_content_length_and_offset() {
+        let response = b"HTTP/1.0 200 OK\r\nContent-Length: 42\r\n\r\nbody";
+        let hdr = parse_response_headers(response).expect("headers should parse");
+        assert!(hdr.status_ok, "status should be ok");
+        assert_eq!(hdr.content_length, Some(42));
+        assert_eq!(hdr.body_offset, 39, "body should start after CRLFCRLF");
+    }
+
+    #[test]
+    fn parse_response_headers_detects_non_2xx_status() {
+        let response = b"HTTP/1.0 404 Not Found\r\n\r\n";
+        let hdr = parse_response_headers(response).expect("headers should parse");
+        assert!(!hdr.status_ok, "404 should not be marked as ok");
+    }
+
+    #[test]
+    fn extract_body_at_eof_returns_body_without_content_length() {
+        let response = b"HTTP/1.0 200 OK\r\nServer: docker\r\n\r\n[1,2]";
+        let hdr = parse_response_headers(response).unwrap();
+        let body = extract_body_at_eof(response, Some(&hdr));
+        assert_eq!(body.as_deref(), Some("[1,2]"));
+    }
+
+    #[test]
+    fn extract_body_at_eof_falls_back_when_no_headers_parsed() {
+        let response = b"HTTP/1.0 200 OK\r\n\r\nhello";
+        let body = extract_body_at_eof(response, None);
+        assert_eq!(body.as_deref(), Some("hello"));
     }
 
     #[cfg(unix)]
