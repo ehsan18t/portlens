@@ -36,6 +36,49 @@ const PROJECT_MARKER_EXTENSIONS: &[&str] = &["csproj", "fsproj"];
 /// working directories (e.g. `/var/run/service/nested/deep/path`).
 pub(crate) const MAX_WALK_DEPTH: usize = 16;
 
+/// Iterate ancestor directories starting from `start`, walking upward.
+///
+/// Stops when the filesystem root is reached, `MAX_WALK_DEPTH` levels
+/// have been visited, or the `home` directory ceiling is hit.
+///
+/// This is the single source of truth for the upward-walk strategy used
+/// by both the uncached [`find_from_dir`] helper and the cached variant
+/// in the collector module.
+pub(crate) fn walk_ancestors<'a>(
+    start: &'a Path,
+    home: Option<&'a Path>,
+) -> impl Iterator<Item = PathBuf> + 'a {
+    let mut current = Some(start.to_path_buf());
+    let mut depth = 0;
+
+    std::iter::from_fn(move || {
+        let dir = current.as_ref()?.clone();
+
+        if depth >= MAX_WALK_DEPTH {
+            current = None;
+            return None;
+        }
+
+        if let Some(h) = home
+            && dir == *h
+        {
+            current = None;
+            return None;
+        }
+
+        depth += 1;
+
+        let mut next = dir.clone();
+        if next.pop() && next != dir {
+            current = Some(next);
+        } else {
+            current = None;
+        }
+
+        Some(dir)
+    })
+}
+
 /// Detect the project root path for a process.
 ///
 /// Tries the working directory first, then falls back to parsing
@@ -99,26 +142,7 @@ pub(crate) fn absolute_cmd_parents<'a, S: AsRef<OsStr> + 'a>(
 /// checks command-line arguments.
 #[must_use]
 pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
-
-    for _ in 0..MAX_WALK_DEPTH {
-        // Stop at the user's home directory to avoid matching stray
-        // marker files that were accidentally placed in ~ or above.
-        if let Some(h) = home
-            && current == h
-        {
-            return None;
-        }
-
-        if has_marker(&current) {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-
-    None
+    walk_ancestors(start, home).find(|dir| has_marker(dir))
 }
 
 /// Return the current user's home directory, if it can be determined.

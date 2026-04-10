@@ -624,35 +624,24 @@ fn lookup_cached_project_root(
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&Path>,
 ) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
     let mut visited = Vec::new();
 
-    for _ in 0..project::MAX_WALK_DEPTH {
-        if let Some(h) = home
-            && current == h
-        {
-            break;
-        }
-
-        if let Some(cached) = cache.get(&current).cloned() {
+    for dir in project::walk_ancestors(start, home) {
+        if let Some(cached) = cache.get(&dir).cloned() {
             for path in visited {
                 cache.insert(path, cached.clone());
             }
             return cached;
         }
 
-        visited.push(current.clone());
+        visited.push(dir.clone());
 
-        if project::has_marker(&current) {
-            let result = Some(current.clone());
+        if project::has_marker(&dir) {
+            let result = Some(dir);
             for path in visited {
                 cache.insert(path, result.clone());
             }
             return result;
-        }
-
-        if !current.pop() {
-            break;
         }
     }
 
