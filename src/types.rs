@@ -184,6 +184,18 @@ mod tests {
         for (state, expected) in [
             (State::Listen, "LISTEN"),
             (State::Established, "ESTABLISHED"),
+            (State::SynSent, "SYN_SENT"),
+            (State::SynReceived, "SYN_RECV"),
+            (State::FinWait1, "FIN_WAIT1"),
+            (State::FinWait2, "FIN_WAIT2"),
+            (State::TimeWait, "TIME_WAIT"),
+            (State::Close, "CLOSE"),
+            (State::CloseWait, "CLOSE_WAIT"),
+            (State::LastAck, "LAST_ACK"),
+            (State::Closing, "CLOSING"),
+            (State::NewSynReceived, "NEW_SYN_RECV"),
+            (State::DeleteTcb, "DELETE_TCB"),
+            (State::Unknown, "UNKNOWN"),
             (State::NotApplicable, "-"),
         ] {
             assert_eq!(state.to_string(), expected, "state display should match");
