@@ -122,6 +122,9 @@ src/
 - `display.rs` owns all rendering logic.
 - `docker.rs`, `framework.rs`, and `project.rs` provide best-effort enrichment only.
 
+Interactive table output also emits a shortcut footer on stderr. Preserve that
+stdout/stderr split when changing display behavior so piped data stays clean.
+
 ---
 
 ## Coding Standards

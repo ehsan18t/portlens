@@ -92,21 +92,10 @@ fn run() -> Result<()> {
                 compact: cli.compact,
             },
         )?;
-        print_tips();
+        if std::io::stdout().is_terminal() {
+            display::print_tips()?;
+        }
     }
 
     Ok(())
-}
-
-/// Print a one-line version and tips footer when running interactively.
-///
-/// Only prints when stdout is a terminal so piped output stays clean.
-fn print_tips() {
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
-    let version = env!("CARGO_PKG_VERSION");
-    eprintln!(
-        "portview v{version} - Tips: -p PORT (filter) | -a (all) | --full (details) | --json | -h (help)"
-    );
 }

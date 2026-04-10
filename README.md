@@ -68,6 +68,9 @@ Full view (`portview --full`):
 ╰───────┴───────┴───────────┴────────┴──────────┴──────┴──────────┴────────────────────┴────────────┴────────╯
 ```
 
+When stdout is an interactive terminal, portview also prints a small shortcut
+footer to stderr after the table. Redirected and piped stdout stays clean.
+
 ---
 
 ## Installation

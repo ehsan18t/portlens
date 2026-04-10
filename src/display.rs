@@ -6,12 +6,35 @@
 use std::io::{self, Write};
 
 use anyhow::{Context, Result};
-use comfy_table::{ContentArrangement, Table};
 
 use crate::types::{PortEntry, format_uptime};
 
 /// Maximum display width for the process name column before truncation.
 const MAX_PROCESS_NAME_LEN: usize = 20;
+
+const DEFAULT_COLUMNS: &[Column] = &[
+    Column::Port,
+    Column::Proto,
+    Column::Address,
+    Column::Process,
+    Column::Pid,
+    Column::Project,
+    Column::App,
+    Column::Uptime,
+];
+
+const FULL_COLUMNS: &[Column] = &[
+    Column::Port,
+    Column::Proto,
+    Column::Address,
+    Column::State,
+    Column::Process,
+    Column::Pid,
+    Column::User,
+    Column::Project,
+    Column::App,
+    Column::Uptime,
+];
 
 /// Options controlling how entries are rendered.
 pub struct DisplayOptions {
@@ -21,6 +44,41 @@ pub struct DisplayOptions {
     pub full: bool,
     /// Use compact (borderless) table style.
     pub compact: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Column {
+    Port,
+    Proto,
+    Address,
+    State,
+    Process,
+    Pid,
+    User,
+    Project,
+    App,
+    Uptime,
+}
+
+#[derive(Clone, Copy)]
+enum Alignment {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy)]
+struct BorderStyle {
+    vertical: char,
+    horizontal: char,
+    top_left: char,
+    top_join: char,
+    top_right: char,
+    middle_left: char,
+    middle_join: char,
+    middle_right: char,
+    bottom_left: char,
+    bottom_join: char,
+    bottom_right: char,
 }
 
 /// Print the entries as a table to stdout.
@@ -38,72 +96,32 @@ pub fn print_json(entries: &[PortEntry]) -> Result<()> {
     write_json(&mut io::stdout().lock(), entries)
 }
 
+/// Print the interactive tips footer to stderr.
+pub fn print_tips() -> Result<()> {
+    write_tips(&mut io::stderr().lock())
+}
+
 /// Render entries as a table to the given writer.
 fn write_table(
     writer: &mut impl Write,
     entries: &[PortEntry],
     opts: &DisplayOptions,
 ) -> Result<()> {
-    let mut table = Table::new();
-    table.set_content_arrangement(ContentArrangement::Dynamic);
+    let columns = table_columns(opts.full);
+    let rows = build_rows(entries, columns);
+    let widths = measure_column_widths(columns, &rows, opts.show_header);
 
     if opts.compact {
-        table.load_preset(comfy_table::presets::NOTHING);
-    } else if terminal_supports_utf8_borders() {
-        table.load_preset(comfy_table::presets::UTF8_FULL);
-        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        write_compact_table(writer, columns, &rows, &widths, opts.show_header)?;
     } else {
-        table.load_preset(comfy_table::presets::ASCII_FULL);
-    }
-
-    if opts.show_header {
-        if opts.full {
-            table.set_header(vec![
-                "PORT", "PROTO", "ADDRESS", "STATE", "PROCESS", "PID", "USER", "PROJECT", "APP",
-                "UPTIME",
-            ]);
+        let style = if terminal_supports_utf8_borders() {
+            utf8_border_style()
         } else {
-            table.set_header(vec![
-                "PORT", "PROTO", "ADDRESS", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
-            ]);
-        }
+            ascii_border_style()
+        };
+        write_bordered_table(writer, columns, &rows, &widths, opts.show_header, style)?;
     }
 
-    for entry in entries {
-        let local_addr = entry.local_addr.to_string();
-        let process_display = truncate_process_name(&entry.process);
-        let project = entry.project.as_deref().unwrap_or("-");
-        let app = entry.app.unwrap_or("-");
-        let uptime = format_uptime(entry.uptime_secs);
-
-        if opts.full {
-            table.add_row(vec![
-                entry.port.to_string(),
-                entry.proto.to_string(),
-                local_addr,
-                entry.state.to_string(),
-                process_display,
-                entry.pid.to_string(),
-                entry.user.clone(),
-                project.to_string(),
-                app.to_string(),
-                uptime,
-            ]);
-        } else {
-            table.add_row(vec![
-                entry.port.to_string(),
-                entry.proto.to_string(),
-                local_addr,
-                process_display,
-                entry.pid.to_string(),
-                project.to_string(),
-                app.to_string(),
-                uptime,
-            ]);
-        }
-    }
-
-    writeln!(writer, "{table}").context("failed to write table to stdout")?;
     Ok(())
 }
 
@@ -113,6 +131,332 @@ fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
         serde_json::to_string_pretty(entries).context("failed to serialize entries to JSON")?;
     writeln!(writer, "{json}").context("failed to write JSON to stdout")?;
     Ok(())
+}
+
+fn write_tips(writer: &mut impl Write) -> Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let title = format!("portview v{version}");
+    let lines = [
+        render_tip_row(&[("filter", "-p PORT"), ("all", "-a"), ("details", "--full")]),
+        render_tip_row(&[("json", "--json"), ("help", "-h")]),
+    ];
+    let style = if terminal_supports_utf8_borders() {
+        utf8_border_style()
+    } else {
+        ascii_border_style()
+    };
+    let tip_box = render_tip_box(&title, &lines, style);
+
+    write!(writer, "\n{tip_box}\n").context("failed to write tips to stderr")?;
+    Ok(())
+}
+
+const fn table_columns(full: bool) -> &'static [Column] {
+    if full { FULL_COLUMNS } else { DEFAULT_COLUMNS }
+}
+
+fn build_rows(entries: &[PortEntry], columns: &[Column]) -> Vec<Vec<String>> {
+    entries
+        .iter()
+        .map(|entry| columns.iter().map(|column| column.value(entry)).collect())
+        .collect()
+}
+
+fn measure_column_widths(
+    columns: &[Column],
+    rows: &[Vec<String>],
+    show_header: bool,
+) -> Vec<usize> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let header_width = if show_header {
+                display_width(column.heading())
+            } else {
+                0
+            };
+            let row_width = rows
+                .iter()
+                .filter_map(|row| row.get(index))
+                .map(String::as_str)
+                .map(display_width)
+                .max()
+                .unwrap_or_default();
+
+            header_width.max(row_width)
+        })
+        .collect()
+}
+
+fn write_bordered_table(
+    writer: &mut impl Write,
+    columns: &[Column],
+    rows: &[Vec<String>],
+    widths: &[usize],
+    show_header: bool,
+    style: BorderStyle,
+) -> Result<()> {
+    let mut lines = vec![render_border_line(
+        widths,
+        style.top_left,
+        style.top_join,
+        style.top_right,
+        style.horizontal,
+    )];
+
+    if show_header {
+        lines.push(render_header_row(columns, widths, style.vertical));
+        lines.push(render_border_line(
+            widths,
+            style.middle_left,
+            style.middle_join,
+            style.middle_right,
+            style.horizontal,
+        ));
+    }
+
+    lines.extend(
+        rows.iter()
+            .map(|row| render_data_row(row, columns, widths, style.vertical)),
+    );
+
+    lines.push(render_border_line(
+        widths,
+        style.bottom_left,
+        style.bottom_join,
+        style.bottom_right,
+        style.horizontal,
+    ));
+
+    writeln!(writer, "{}", lines.join("\n")).context("failed to write table to stdout")?;
+    Ok(())
+}
+
+fn write_compact_table(
+    writer: &mut impl Write,
+    columns: &[Column],
+    rows: &[Vec<String>],
+    widths: &[usize],
+    show_header: bool,
+) -> Result<()> {
+    let mut lines = Vec::new();
+
+    if show_header {
+        lines.push(render_compact_header(columns, widths));
+    }
+
+    lines.extend(
+        rows.iter()
+            .map(|row| render_compact_row(row, columns, widths)),
+    );
+
+    if lines.is_empty() {
+        writeln!(writer).context("failed to write compact table to stdout")?;
+    } else {
+        writeln!(writer, "{}", lines.join("\n"))
+            .context("failed to write compact table to stdout")?;
+    }
+
+    Ok(())
+}
+
+fn render_border_line(
+    widths: &[usize],
+    left: char,
+    join: char,
+    right: char,
+    horizontal: char,
+) -> String {
+    let segment = horizontal.to_string();
+    let join = join.to_string();
+    let body = widths
+        .iter()
+        .map(|width| segment.repeat(width + 2))
+        .collect::<Vec<_>>()
+        .join(&join);
+
+    format!("{left}{body}{right}")
+}
+
+fn render_header_row(columns: &[Column], widths: &[usize], vertical: char) -> String {
+    let separator = vertical.to_string();
+    let cells = columns
+        .iter()
+        .zip(widths)
+        .map(|(column, width)| format_cell(column.heading(), *width, Alignment::Left))
+        .collect::<Vec<_>>()
+        .join(&separator);
+
+    format!("{vertical}{cells}{vertical}")
+}
+
+fn render_data_row(row: &[String], columns: &[Column], widths: &[usize], vertical: char) -> String {
+    let separator = vertical.to_string();
+    let cells = row
+        .iter()
+        .zip(columns)
+        .zip(widths)
+        .map(|((cell, column), width)| format_cell(cell, *width, column.alignment()))
+        .collect::<Vec<_>>()
+        .join(&separator);
+
+    format!("{vertical}{cells}{vertical}")
+}
+
+fn render_compact_header(columns: &[Column], widths: &[usize]) -> String {
+    columns
+        .iter()
+        .zip(widths)
+        .map(|(column, width)| pad_value(column.heading(), *width, Alignment::Left))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn render_compact_row(row: &[String], columns: &[Column], widths: &[usize]) -> String {
+    row.iter()
+        .zip(columns)
+        .zip(widths)
+        .map(|((cell, column), width)| pad_value(cell, *width, column.alignment()))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn format_cell(value: &str, width: usize, alignment: Alignment) -> String {
+    format!(" {} ", pad_value(value, width, alignment))
+}
+
+fn pad_value(value: &str, width: usize, alignment: Alignment) -> String {
+    let padding = width.saturating_sub(display_width(value));
+
+    match alignment {
+        Alignment::Left => format!("{value}{}", " ".repeat(padding)),
+        Alignment::Right => format!("{}{value}", " ".repeat(padding)),
+    }
+}
+
+fn render_tip_row(items: &[(&str, &str)]) -> String {
+    items
+        .iter()
+        .map(|(label, value)| format!("{label:<7} {value}"))
+        .collect::<Vec<_>>()
+        .join("   ")
+}
+
+fn render_tip_box(title: &str, lines: &[String], style: BorderStyle) -> String {
+    let title = format!(" {title} ");
+    let content_width = lines
+        .iter()
+        .map(String::as_str)
+        .map(display_width)
+        .max()
+        .unwrap_or_default()
+        .max(display_width(&title).saturating_sub(2));
+    let top_fill = style
+        .horizontal
+        .to_string()
+        .repeat(content_width + 2 - display_width(&title));
+    let bottom_fill = style.horizontal.to_string().repeat(content_width + 2);
+    let mut rendered = Vec::with_capacity(lines.len() + 2);
+
+    rendered.push(format!(
+        "{}{}{top_fill}{}",
+        style.top_left, title, style.top_right
+    ));
+
+    rendered.extend(lines.iter().map(|line| {
+        let padding = " ".repeat(content_width.saturating_sub(display_width(line)));
+        format!("{} {line}{padding} {}", style.vertical, style.vertical)
+    }));
+
+    rendered.push(format!(
+        "{}{}{}",
+        style.bottom_left, bottom_fill, style.bottom_right
+    ));
+
+    rendered.join("\n")
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().count()
+}
+
+const fn utf8_border_style() -> BorderStyle {
+    BorderStyle {
+        vertical: '│',
+        horizontal: '─',
+        top_left: '╭',
+        top_join: '┬',
+        top_right: '╮',
+        middle_left: '├',
+        middle_join: '┼',
+        middle_right: '┤',
+        bottom_left: '╰',
+        bottom_join: '┴',
+        bottom_right: '╯',
+    }
+}
+
+const fn ascii_border_style() -> BorderStyle {
+    BorderStyle {
+        vertical: '|',
+        horizontal: '-',
+        top_left: '+',
+        top_join: '+',
+        top_right: '+',
+        middle_left: '+',
+        middle_join: '+',
+        middle_right: '+',
+        bottom_left: '+',
+        bottom_join: '+',
+        bottom_right: '+',
+    }
+}
+
+impl Column {
+    const fn heading(self) -> &'static str {
+        match self {
+            Self::Port => "PORT",
+            Self::Proto => "PROTO",
+            Self::Address => "ADDRESS",
+            Self::State => "STATE",
+            Self::Process => "PROCESS",
+            Self::Pid => "PID",
+            Self::User => "USER",
+            Self::Project => "PROJECT",
+            Self::App => "APP",
+            Self::Uptime => "UPTIME",
+        }
+    }
+
+    const fn alignment(self) -> Alignment {
+        match self {
+            Self::Port | Self::Pid => Alignment::Right,
+            Self::Proto
+            | Self::Address
+            | Self::State
+            | Self::Process
+            | Self::User
+            | Self::Project
+            | Self::App
+            | Self::Uptime => Alignment::Left,
+        }
+    }
+
+    fn value(self, entry: &PortEntry) -> String {
+        match self {
+            Self::Port => entry.port.to_string(),
+            Self::Proto => entry.proto.to_string(),
+            Self::Address => entry.local_addr.to_string(),
+            Self::State => entry.state.to_string(),
+            Self::Process => truncate_process_name(&entry.process),
+            Self::Pid => entry.pid.to_string(),
+            Self::User => entry.user.clone(),
+            Self::Project => entry.project.as_deref().unwrap_or("-").to_string(),
+            Self::App => entry.app.unwrap_or("-").to_string(),
+            Self::Uptime => format_uptime(entry.uptime_secs),
+        }
+    }
 }
 
 /// Check whether the terminal can display UTF-8 box-drawing characters.
@@ -419,5 +763,33 @@ mod tests {
         );
         assert!(output.contains("Next.js"), "table should contain app label");
         assert!(output.contains("1h"), "table should contain uptime");
+    }
+
+    #[test]
+    fn write_tips_renders_shortcut_box() {
+        let mut buffer = Vec::new();
+        write_tips(&mut buffer).expect("write_tips should succeed");
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+
+        assert!(
+            output.contains("portview v"),
+            "tips should include the version title"
+        );
+        assert!(
+            output.contains("filter  -p PORT"),
+            "tips should include the port filter shortcut"
+        );
+        assert!(
+            output.contains("details --full"),
+            "tips should include the details shortcut"
+        );
+        assert!(
+            output.contains("json    --json"),
+            "tips should include the JSON shortcut"
+        );
+        assert!(
+            output.contains("help    -h"),
+            "tips should include the help shortcut"
+        );
     }
 }
