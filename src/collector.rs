@@ -300,13 +300,24 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
     }
 }
 
+/// Extract the local address hex and state hex from a `/proc/net/tcp*` line.
+///
+/// Each line in `/proc/net/tcp` and `/proc/net/tcp6` follows the same
+/// whitespace-delimited layout: `slot local_addr remote_addr state ...`.
+/// This helper extracts the two fields both parsers need.
 #[cfg(target_os = "linux")]
-fn parse_linux_tcp_table_entry(line: &str) -> Option<(SocketAddr, State)> {
+fn tokenize_proc_tcp_line(line: &str) -> Option<(&str, &str)> {
     let mut parts = line.split_whitespace();
     let _slot = parts.next()?;
     let local_addr_hex = parts.next()?;
     let _remote_addr_hex = parts.next()?;
     let state_hex = parts.next()?;
+    Some((local_addr_hex, state_hex))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_tcp_table_entry(line: &str) -> Option<(SocketAddr, State)> {
+    let (local_addr_hex, state_hex) = tokenize_proc_tcp_line(line)?;
 
     let (ip_hex, port_hex) = local_addr_hex.split_once(':')?;
     let ip = Ipv4Addr::from(u32::from_be(u32::from_str_radix(ip_hex, 16).ok()?));
@@ -325,11 +336,7 @@ fn parse_linux_tcp6_table_entry(line: &str) -> Option<(SocketAddr, State)> {
     #[cfg(target_endian = "big")]
     let read_endian = u32::from_be_bytes;
 
-    let mut parts = line.split_whitespace();
-    let _slot = parts.next()?;
-    let local_addr_hex = parts.next()?;
-    let _remote_addr_hex = parts.next()?;
-    let state_hex = parts.next()?;
+    let (local_addr_hex, state_hex) = tokenize_proc_tcp_line(line)?;
 
     let (ip_hex, port_hex) = local_addr_hex.split_once(':')?;
     if ip_hex.len() != 32 {
