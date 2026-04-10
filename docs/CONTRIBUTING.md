@@ -21,12 +21,20 @@ cargo build
 
 ### Install Git Hooks
 
+**Windows (PowerShell):**
+
 ```powershell
 .\scripts\install-hooks.ps1
 ```
 
-This installs pre-commit, pre-push, and commit-msg hooks that enforce quality
-gates locally before CI.
+**Linux / macOS:**
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Both scripts install pre-commit, pre-push, and commit-msg hooks that enforce
+quality gates locally before CI.
 
 ---
 
@@ -44,9 +52,22 @@ All of the following must pass before merging:
 | 6    | `cargo doc --no-deps`         | Documentation builds      |
 | 7    | `cargo deny check`            | No vulnerable/banned deps |
 
+CI runs on every push to `main` **and** on every pull request targeting `main`,
+so cross-platform issues (Linux + Windows matrix) are caught before a PR is merged.
+
 Workflow dependencies in `.github/workflows/` are pinned to full commit SHAs.
 When updating an action, keep the trailing version comment (for example `# v6`)
 so reviewers can see the intended upstream release at a glance.
+
+### Releasing
+
+Releases are created via the **Release** workflow (`Actions` tab):
+
+1. Go to `Actions` > `Release` > `Run workflow`.
+2. Enter the version tag (e.g. `v0.2.0`).
+3. The workflow builds binaries for all targets, packages them, and creates a
+   draft release with auto-generated release notes.
+4. Review and publish the draft on the GitHub Releases page.
 
 ---
 
