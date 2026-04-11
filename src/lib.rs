@@ -31,3 +31,5 @@ pub mod framework;
 pub mod project;
 #[doc(hidden)]
 pub mod types;
+#[doc(hidden)]
+pub mod update;

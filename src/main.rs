@@ -3,11 +3,12 @@
 //! Parses CLI arguments, collects socket data, applies filters, and renders
 //! output to stdout.
 
+use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use portview::{collector, display, filter};
 use tracing_subscriber::EnvFilter;
 
@@ -60,6 +61,19 @@ struct Cli {
     /// Disable Docker/Podman and project-root enrichment. Combine with --all for the rawest view.
     #[arg(long = "no-enrich")]
     no_enrich: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Check for updates and optionally self-update the binary.
+    Update {
+        /// Only check for a new version without downloading or installing.
+        #[arg(long = "check")]
+        check: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -84,9 +98,40 @@ fn init_tracing() -> Result<()> {
     Ok(())
 }
 
+/// Normalize CLI arguments to lowercase for case-insensitive matching.
+///
+/// Skips argv\[0\] (the program name/path). All other arguments are
+/// lowercased. This is safe because portview has no string-valued
+/// arguments — only numeric port values, flags, and subcommand names,
+/// none of which are affected by lowercasing.
+fn normalize_args() -> Vec<OsString> {
+    std::env::args_os()
+        .enumerate()
+        .map(|(i, arg)| {
+            if i == 0 {
+                return arg;
+            }
+            // Convert to UTF-8 for lowercasing; fall back to original if
+            // the argument contains non-UTF-8 bytes (unlikely on any
+            // supported platform).
+            arg.into_string().map_or_else(
+                |original| original,
+                |s| OsString::from(s.to_ascii_lowercase()),
+            )
+        })
+        .collect()
+}
+
 /// Application entry point, separated from `main()` for testability.
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(normalize_args());
+
+    // Dispatch to subcommand if present
+    if let Some(command) = &cli.command {
+        return match command {
+            Command::Update { check } => portview::update::run(*check),
+        };
+    }
 
     let entries = collector::collect_with_options(&collector::CollectOptions {
         deep_enrichment: !cli.no_enrich,
