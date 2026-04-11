@@ -1,5 +1,7 @@
 # portview
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/0779b2326faa4702bdf0f3e8978a40f3)](https://app.codacy.com/gh/ehsan18t/portview?utm_source=github.com&utm_medium=referral&utm_content=ehsan18t/portview&utm_campaign=Badge_Grade)
+
 **A cross-platform CLI tool that lists open network ports and their associated processes.**
 
 A fast, readable alternative to `netstat` and `ss`. Single binary with no external tool dependencies, works on Linux and Windows.
