@@ -77,11 +77,6 @@ fn parse_linux_tcp_table_entry(line: &str) -> Option<(SocketAddr, State)> {
 
 #[cfg(target_os = "linux")]
 fn parse_linux_tcp6_table_entry(line: &str) -> Option<(SocketAddr, State)> {
-    #[cfg(target_endian = "little")]
-    let read_endian = u32::from_le_bytes;
-    #[cfg(target_endian = "big")]
-    let read_endian = u32::from_be_bytes;
-
     let (local_addr_hex, state_hex) = tokenize_proc_tcp_line(line)?;
 
     let (ip_hex, port_hex) = local_addr_hex.split_once(':')?;
@@ -95,10 +90,12 @@ fn parse_linux_tcp6_table_entry(line: &str) -> Option<(SocketAddr, State)> {
         *slot = u8::from_str_radix(&ip_hex[offset..offset + 2], 16).ok()?;
     }
 
-    let ip_a = read_endian(bytes[0..4].try_into().ok()?);
-    let ip_b = read_endian(bytes[4..8].try_into().ok()?);
-    let ip_c = read_endian(bytes[8..12].try_into().ok()?);
-    let ip_d = read_endian(bytes[12..16].try_into().ok()?);
+    // /proc/net/tcp6 writes each 4-byte word in host byte order, so
+    // native-endian is the correct (and only) reader on both LE and BE.
+    let ip_a = u32::from_ne_bytes(bytes[0..4].try_into().ok()?);
+    let ip_b = u32::from_ne_bytes(bytes[4..8].try_into().ok()?);
+    let ip_c = u32::from_ne_bytes(bytes[8..12].try_into().ok()?);
+    let ip_d = u32::from_ne_bytes(bytes[12..16].try_into().ok()?);
     let ip = Ipv6Addr::new(
         ((ip_a >> 16) & 0xffff) as u16,
         (ip_a & 0xffff) as u16,
