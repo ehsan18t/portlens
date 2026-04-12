@@ -64,33 +64,35 @@ fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(super) fn sample_entry_for_tests() -> PortEntry {
+    PortEntry {
+        port: 8080,
+        local_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        proto: crate::types::Protocol::Tcp,
+        state: crate::types::State::Listen,
+        pid: 1234,
+        process: "node".into(),
+        user: "user".into(),
+        project: Some("my-app".to_string()),
+        app: Some("Next.js".into()),
+        uptime_secs: Some(3600),
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-
     use super::*;
-    use crate::types::{Protocol, State};
 
-    fn sample_entry() -> PortEntry {
-        PortEntry {
-            port: 8080,
-            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            proto: Protocol::Tcp,
-            state: State::Listen,
-            pid: 1234,
-            process: "node".into(),
-            user: "user".into(),
-            project: Some("my-app".to_string()),
-            app: Some("Next.js".into()),
-            uptime_secs: Some(3600),
-        }
+    fn render_json_output(entries: &[PortEntry]) -> String {
+        let mut buffer = Vec::new();
+        write_json(&mut buffer, entries).expect("write_json should succeed");
+        String::from_utf8(buffer).expect("output should be valid UTF-8")
     }
 
     #[test]
     fn write_json_contains_expected_fields() {
-        let entries = vec![sample_entry()];
-        let mut buffer = Vec::new();
-        write_json(&mut buffer, &entries).expect("write_json should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let output = render_json_output(&entries);
 
         assert!(
             output.contains("\"port\": 8080"),
@@ -116,9 +118,7 @@ mod tests {
 
     #[test]
     fn write_json_empty_entries_produces_empty_array() {
-        let mut buffer = Vec::new();
-        write_json(&mut buffer, &[]).expect("write_json should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let output = render_json_output(&[]);
         assert_eq!(output.trim(), "[]", "empty entries should produce []");
     }
 }

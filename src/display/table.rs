@@ -477,10 +477,9 @@ impl Column {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-
+    use super::super::sample_entry_for_tests;
     use super::*;
-    use crate::types::{PortEntry, Protocol, State};
+    use crate::types::PortEntry;
 
     #[test]
     fn format_uptime_none() {
@@ -588,19 +587,23 @@ mod tests {
         );
     }
 
-    fn sample_entry() -> PortEntry {
-        PortEntry {
-            port: 8080,
-            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            proto: Protocol::Tcp,
-            state: State::Listen,
-            pid: 1234,
-            process: "node".into(),
-            user: "user".into(),
-            project: Some("my-app".to_string()),
-            app: Some("Next.js".into()),
-            uptime_secs: Some(3600),
+    fn display_options(show_header: bool, full: bool, compact: bool) -> DisplayOptions {
+        DisplayOptions {
+            show_header,
+            full,
+            compact,
         }
+    }
+
+    fn render_table_output(
+        entries: &[PortEntry],
+        opts: &DisplayOptions,
+        width: Option<usize>,
+    ) -> String {
+        let mut buffer = Vec::new();
+        write_table_with_width(&mut buffer, entries, opts, width)
+            .expect("write_table_with_width should succeed");
+        String::from_utf8(buffer).expect("output should be valid UTF-8")
     }
 
     #[test]
@@ -647,16 +650,9 @@ mod tests {
 
     #[test]
     fn write_table_default_columns_include_expected_headers() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table_with_width(&mut buffer, &entries, &opts, None)
-            .expect("write_table_with_width should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(true, false, false);
+        let output = render_table_output(&entries, &opts, None);
 
         for header in [
             "PORT", "PROTO", "ADDRESS", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
@@ -678,16 +674,9 @@ mod tests {
 
     #[test]
     fn write_table_full_columns_include_state_and_user() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: true,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table_with_width(&mut buffer, &entries, &opts, None)
-            .expect("write_table_with_width should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(true, true, false);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(
             output.contains("STATE"),
@@ -701,16 +690,9 @@ mod tests {
 
     #[test]
     fn write_table_no_header_omits_column_names() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table_with_width(&mut buffer, &entries, &opts, None)
-            .expect("write_table_with_width should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(false, false, false);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(
             !output.contains("PROTO"),
@@ -720,16 +702,9 @@ mod tests {
 
     #[test]
     fn write_table_renders_entry_values() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: true,
-        };
-        let mut buffer = Vec::new();
-        write_table_with_width(&mut buffer, &entries, &opts, None)
-            .expect("write_table_with_width should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(false, false, true);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(output.contains("8080"), "table should contain port number");
         assert!(output.contains("TCP"), "table should contain protocol");
@@ -744,20 +719,11 @@ mod tests {
 
     #[test]
     fn write_table_fits_within_requested_terminal_width() {
-        let mut entry = sample_entry();
+        let mut entry = sample_entry_for_tests();
         entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
         let entries = vec![entry];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-
-        write_table_with_width(&mut buffer, &entries, &opts, Some(60))
-            .expect("write_table_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let opts = display_options(true, false, false);
+        let output = render_table_output(&entries, &opts, Some(60));
         for line in output.lines() {
             assert!(
                 display_width(line) <= 60,
@@ -772,21 +738,12 @@ mod tests {
 
     #[test]
     fn write_compact_table_fits_within_requested_terminal_width() {
-        let mut entry = sample_entry();
+        let mut entry = sample_entry_for_tests();
         entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
         entry.app = Some("Extremely Verbose Framework Name".into());
         let entries = vec![entry];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: false,
-            compact: true,
-        };
-        let mut buffer = Vec::new();
-
-        write_table_with_width(&mut buffer, &entries, &opts, Some(40))
-            .expect("write_table_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let opts = display_options(true, false, true);
+        let output = render_table_output(&entries, &opts, Some(40));
         for line in output.lines() {
             assert!(
                 display_width(line) <= 40,
@@ -801,20 +758,11 @@ mod tests {
 
     #[test]
     fn write_table_falls_back_to_compact_when_borders_cannot_fit() {
-        let mut entry = sample_entry();
+        let mut entry = sample_entry_for_tests();
         entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
         let entries = vec![entry];
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-
-        write_table_with_width(&mut buffer, &entries, &opts, Some(24))
-            .expect("write_table_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let opts = display_options(false, false, false);
+        let output = render_table_output(&entries, &opts, Some(24));
         for line in output.lines() {
             assert!(
                 display_width(line) <= 24,
@@ -832,11 +780,7 @@ mod tests {
 
     #[test]
     fn empty_compact_table_without_header_writes_nothing() {
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: true,
-        };
+        let opts = display_options(false, false, true);
         let mut buffer = Vec::new();
 
         write_table_with_width(&mut buffer, &[], &opts, Some(40))
