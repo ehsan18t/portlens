@@ -77,7 +77,8 @@ Full view (`portview --full`):
 When stdout is an interactive terminal, portview also prints a small shortcut
 footer to stderr after the table. Redirected and piped stdout stays clean.
 The table renderer now trims wide text columns to fit the current terminal
-width instead of overflowing past the right edge.
+width instead of overflowing past the right edge, and it falls back to the
+compact layout when border overhead alone cannot fit on a narrow terminal.
 
 ---
 
@@ -178,8 +179,10 @@ Additional columns with `--full`:
 **Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 
 **Terminal-aware layout:** Wide text columns such as `PROJECT` shrink with an
-ellipsis when the current terminal is narrow, and the interactive shortcut
-footer switches between wide and compact layouts based on available width.
+ellipsis when the current terminal is narrow. If the bordered table cannot fit
+cleanly, portview falls back to the compact layout instead of overflowing. The
+interactive shortcut footer also switches between wide and compact layouts
+based on available width.
 
 **Project detection:** Walks upward from a process working directory looking for project markers (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, etc.) to identify the project name.
 
