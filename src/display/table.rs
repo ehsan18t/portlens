@@ -12,8 +12,8 @@ use crate::types::PortEntry;
 use super::DisplayOptions;
 use super::render::{
     Alignment, BorderStyle, ascii_border_style, display_width, format_cell, pad_value,
-    render_border_line, render_bordered_cells, rendered_table_width, truncate_to_width,
-    utf8_border_style,
+    reduce_widths_to_fit, render_border_line, render_bordered_cells, rendered_table_width,
+    truncate_to_width, utf8_border_style,
 };
 use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
 
@@ -161,21 +161,22 @@ fn fit_table_widths(
         .iter()
         .map(|column| column.preferred_min_width())
         .collect::<Vec<_>>();
+    let shrink_order = sorted_shrink_order(columns);
 
-    shrink_widths_to_budget(
+    reduce_widths_to_fit(
         &mut widths,
-        columns,
         &preferred_min_widths,
+        &shrink_order,
         compact,
         available_width,
     );
 
     if rendered_table_width(&widths, compact) > available_width {
         let hard_min_widths = vec![1; columns.len()];
-        shrink_widths_to_budget(
+        reduce_widths_to_fit(
             &mut widths,
-            columns,
             &hard_min_widths,
+            &shrink_order,
             compact,
             available_width,
         );
@@ -192,31 +193,10 @@ const fn minimum_table_width(column_count: usize, compact: bool) -> usize {
     }
 }
 
-fn shrink_widths_to_budget(
-    widths: &mut [usize],
-    columns: &[Column],
-    min_widths: &[usize],
-    compact: bool,
-    available_width: usize,
-) {
-    let mut overage = rendered_table_width(widths, compact).saturating_sub(available_width);
-    if overage == 0 {
-        return;
-    }
-
+fn sorted_shrink_order(columns: &[Column]) -> Vec<usize> {
     let mut column_indexes = (0..columns.len()).collect::<Vec<_>>();
     column_indexes.sort_by_key(|index| columns[*index].shrink_priority());
-
-    for index in column_indexes {
-        if overage == 0 {
-            break;
-        }
-
-        let reducible = widths[index].saturating_sub(min_widths[index]);
-        let reduction = reducible.min(overage);
-        widths[index] -= reduction;
-        overage -= reduction;
-    }
+    column_indexes
 }
 
 fn write_bordered_table(

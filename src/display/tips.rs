@@ -9,8 +9,9 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::render::{
-    Alignment, BorderStyle, ascii_border_style, display_width, format_cell, render_border_line,
-    render_bordered_cells, rendered_table_width, truncate_to_width, utf8_border_style,
+    Alignment, BorderStyle, ascii_border_style, display_width, format_cell, reduce_widths_to_fit,
+    render_border_line, render_bordered_cells, rendered_table_width, truncate_to_width,
+    utf8_border_style,
 };
 use super::terminal::{stderr_terminal_width, terminal_supports_utf8_borders};
 
@@ -43,6 +44,7 @@ const QUICK_ACTIONS: &[ActionItem] = &[
 ];
 
 const WIDE_TIPS_THRESHOLD: usize = 72;
+const ACTION_WIDTH_SHRINK_ORDER: [usize; 3] = [2, 0, 1];
 
 struct ActionItem {
     name: &'static str,
@@ -169,34 +171,24 @@ fn fit_action_widths(natural_widths: &[usize; 3], terminal_width: Option<usize>)
     let min_widths = [10, 4, 14];
     let hard_min_widths = [6, 2, 8];
 
-    shrink_action_widths_to_budget(&mut widths, &min_widths, available_width);
+    reduce_widths_to_fit(
+        &mut widths,
+        &min_widths,
+        &ACTION_WIDTH_SHRINK_ORDER,
+        false,
+        available_width,
+    );
     if rendered_table_width(&widths, false) > available_width {
-        shrink_action_widths_to_budget(&mut widths, &hard_min_widths, available_width);
+        reduce_widths_to_fit(
+            &mut widths,
+            &hard_min_widths,
+            &ACTION_WIDTH_SHRINK_ORDER,
+            false,
+            available_width,
+        );
     }
 
     widths
-}
-
-fn shrink_action_widths_to_budget(
-    widths: &mut [usize; 3],
-    min_widths: &[usize; 3],
-    available_width: usize,
-) {
-    let mut overage = rendered_table_width(widths, false).saturating_sub(available_width);
-    if overage == 0 {
-        return;
-    }
-
-    for index in [2, 0, 1] {
-        if overage == 0 {
-            break;
-        }
-
-        let reducible = widths[index].saturating_sub(min_widths[index]);
-        let reduction = reducible.min(overage);
-        widths[index] -= reduction;
-        overage -= reduction;
-    }
 }
 
 fn render_titled_top_border(title: &str, total_width: usize, style: BorderStyle) -> String {
