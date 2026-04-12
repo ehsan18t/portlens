@@ -17,9 +17,9 @@
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Output};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Error, Result, bail};
 
 /// GitHub repository owner.
 const REPO_OWNER: &str = "ehsan18t";
@@ -56,37 +56,17 @@ pub fn run(check_only: bool) -> Result<()> {
         return Ok(());
     }
 
-    let platform = detect_platform()?;
-
-    match platform {
+    match detect_platform()? {
         Platform::WindowsExe => {
-            let asset_name = format!("portview-{remote}-x86_64.exe");
-            let asset = find_asset(&release, &asset_name)?;
-            let binary_path = current_exe_path()?;
-            download_and_replace_windows(&asset.browser_download_url, &binary_path)?;
+            apply_asset_update(&release, remote, "exe", download_and_replace_windows)?;
             eprintln!("Updated portview: {current} -> {remote}");
         }
         Platform::LinuxTarGz => {
-            let asset_name = format!("portview-{remote}-x86_64.tar.gz");
-            let asset = find_asset(&release, &asset_name)?;
-            let binary_path = current_exe_path()?;
-            download_and_replace_linux_tar(&asset.browser_download_url, &binary_path)?;
+            apply_asset_update(&release, remote, "tar.gz", download_and_replace_linux_tar)?;
             eprintln!("Updated portview: {current} -> {remote}");
         }
-        Platform::LinuxDeb | Platform::LinuxRpm => {
-            eprintln!();
-            eprintln!("WARNING: Auto-update is not available for your installation method.");
-            eprintln!(
-                "Your binary appears to be managed by {}.",
-                if platform == Platform::LinuxDeb {
-                    "dpkg (Debian/Ubuntu)"
-                } else {
-                    "rpm (Fedora/RHEL)"
-                }
-            );
-            eprintln!("Please update using your package manager, or download manually:");
-            print_manual_download_info(&release);
-        }
+        Platform::LinuxDeb => notify_package_managed(&release, "dpkg (Debian/Ubuntu)"),
+        Platform::LinuxRpm => notify_package_managed(&release, "rpm (Fedora/RHEL)"),
         Platform::Unsupported => {
             eprintln!();
             eprintln!("WARNING: Auto-update is not available on this platform.");
@@ -96,6 +76,26 @@ pub fn run(check_only: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn apply_asset_update(
+    release: &Release,
+    remote: &str,
+    ext: &str,
+    install: fn(&str, &Path) -> Result<()>,
+) -> Result<()> {
+    let asset_name = format!("portview-{remote}-x86_64.{ext}");
+    let asset = find_asset(release, &asset_name)?;
+    let binary_path = current_exe_path()?;
+    install(&asset.browser_download_url, &binary_path)
+}
+
+fn notify_package_managed(release: &Release, manager: &str) {
+    eprintln!();
+    eprintln!("WARNING: Auto-update is not available for your installation method.");
+    eprintln!("Your binary appears to be managed by {manager}.");
+    eprintln!("Please update using your package manager, or download manually:");
+    print_manual_download_info(release);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,29 +129,24 @@ fn detect_platform() -> Result<Platform> {
 fn detect_linux_install_method(binary_path: &Path) -> Platform {
     let path_str = binary_path.to_string_lossy();
 
-    // Check dpkg first (Debian/Ubuntu)
-    if let Ok(output) = ProcessCommand::new("dpkg")
-        .args(["-S", &path_str])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        && output.success()
-    {
+    if path_owned_by("dpkg", "-S", &path_str) {
         return Platform::LinuxDeb;
     }
+    if path_owned_by("rpm", "-qf", &path_str) {
+        return Platform::LinuxRpm;
+    }
+    Platform::LinuxTarGz
+}
 
-    // Check rpm (Fedora/RHEL)
-    if let Ok(output) = ProcessCommand::new("rpm")
-        .args(["-qf", &path_str])
+/// Return true if `tool` reports that it owns `path` (exit status 0).
+#[cfg(target_os = "linux")]
+fn path_owned_by(tool: &str, flag: &str, path: &str) -> bool {
+    ProcessCommand::new(tool)
+        .args([flag, path])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        && output.success()
-    {
-        return Platform::LinuxRpm;
-    }
-
-    Platform::LinuxTarGz
+        .is_ok_and(|s| s.success())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -204,21 +199,7 @@ fn curl_get_string(url: &str) -> Result<String> {
         )?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
-
-        // curl exit code 22 = HTTP error (--fail flag)
-        if code == 22 {
-            if stderr.contains("403") || stderr.contains("429") {
-                bail!("GitHub API rate limit reached. Try again later.\n  URL: {url}");
-            }
-            if stderr.contains("404") {
-                bail!("No releases found for {REPO_OWNER}/{REPO_NAME}.\n  URL: {url}");
-            }
-            bail!("GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}");
-        }
-
-        bail!("curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}");
+        return Err(api_curl_error(&output, url));
     }
 
     String::from_utf8(output.stdout).context("GitHub API response is not valid UTF-8")
@@ -245,12 +226,43 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
         .context("failed to run curl for download")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
+        let (code, stderr) = curl_failure_parts(&output);
         bail!("Download failed (curl exit code {code}).\n  URL: {url}\n  Detail: {stderr}");
     }
 
     Ok(())
+}
+
+/// Extract the exit code and stderr text from a failed curl invocation.
+fn curl_failure_parts(output: &Output) -> (i32, std::borrow::Cow<'_, str>) {
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// Build a descriptive error from a failed GitHub API curl call.
+fn api_curl_error(output: &Output, url: &str) -> Error {
+    let (code, stderr) = curl_failure_parts(output);
+
+    // curl exit code 22 = HTTP error (--fail flag)
+    if code == 22 {
+        if stderr.contains("403") || stderr.contains("429") {
+            return anyhow::anyhow!(
+                "GitHub API rate limit reached. Try again later.\n  URL: {url}"
+            );
+        }
+        if stderr.contains("404") {
+            return anyhow::anyhow!(
+                "No releases found for {REPO_OWNER}/{REPO_NAME}.\n  URL: {url}"
+            );
+        }
+        return anyhow::anyhow!(
+            "GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}"
+        );
+    }
+
+    anyhow::anyhow!("curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}")
 }
 
 fn fetch_latest_release() -> Result<Release> {
@@ -379,17 +391,7 @@ fn download_and_replace_windows(url: &str, binary_path: &Path) -> Result<()> {
     let old = temp_path_beside(binary_path, ".old.exe")?;
 
     curl_download_file(url, &temp)?;
-
-    // Sanity check: downloaded file should be a reasonable size
-    let meta = std::fs::metadata(&temp)
-        .with_context(|| format!("failed to read downloaded file: {}", temp.display()))?;
-    if meta.len() < 1024 {
-        drop(std::fs::remove_file(&temp));
-        bail!(
-            "Downloaded file is too small ({} bytes) — likely not a valid binary.",
-            meta.len()
-        );
-    }
+    verify_min_size(&temp, 1024, "binary")?;
 
     // Rename current -> old, temp -> current
     // On Windows the running .exe can be renamed but not deleted.
@@ -433,73 +435,17 @@ fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
     eprintln!("Downloading update...");
 
     let temp_archive = temp_path_beside(binary_path, ".tar.gz")?;
     let temp_binary = temp_path_beside(binary_path, "")?;
 
     curl_download_file(url, &temp_archive)?;
+    verify_min_size(&temp_archive, 1024, "archive")?;
 
-    // Sanity check download size
-    let meta = std::fs::metadata(&temp_archive)
-        .with_context(|| format!("failed to read downloaded file: {}", temp_archive.display()))?;
-    if meta.len() < 1024 {
-        drop(std::fs::remove_file(&temp_archive));
-        bail!(
-            "Downloaded file is too small ({} bytes) — likely not a valid archive.",
-            meta.len()
-        );
-    }
-
-    // Extract the `portview` binary from the tar.gz archive
-    let file = std::fs::File::open(&temp_archive)
-        .with_context(|| format!("failed to open archive: {}", temp_archive.display()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-
-    let mut found = false;
-
-    for entry_result in archive
-        .entries()
-        .context("failed to read tar archive entries")?
-    {
-        let mut entry = entry_result.context("failed to read tar entry")?;
-        let entry_path = entry.path().context("failed to read tar entry path")?;
-
-        // Look for the `portview` binary (may be at root or in a subdirectory)
-        let file_name = entry_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        if file_name == "portview" {
-            let mut out_file = std::fs::File::create(&temp_binary).with_context(|| {
-                format!("failed to create temp file: {}", temp_binary.display())
-            })?;
-            std::io::copy(&mut entry, &mut out_file)
-                .context("failed to extract portview binary from archive")?;
-            out_file.flush().context("failed to flush temp file")?;
-
-            // Set executable permission
-            let permissions = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&temp_binary, permissions)
-                .context("failed to set executable permission on updated binary")?;
-
-            found = true;
-            break;
-        }
-    }
-
-    // Clean up archive
+    let extract_result = extract_portview_binary(&temp_archive, &temp_binary);
     drop(std::fs::remove_file(&temp_archive));
-
-    if !found {
-        drop(std::fs::remove_file(&temp_binary));
-        bail!("Archive does not contain a 'portview' binary. Download manually.");
-    }
+    extract_result?;
 
     // Atomic replace: rename temp over current binary
     std::fs::rename(&temp_binary, binary_path).with_context(|| {
@@ -509,6 +455,58 @@ fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
         )
     })?;
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn extract_portview_binary(archive_path: &Path, dest: &Path) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let file = std::fs::File::open(archive_path)
+        .with_context(|| format!("failed to open archive: {}", archive_path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    for entry_result in archive
+        .entries()
+        .context("failed to read tar archive entries")?
+    {
+        let mut entry = entry_result.context("failed to read tar entry")?;
+        let entry_path = entry.path().context("failed to read tar entry path")?;
+        let file_name = entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if file_name == "portview" {
+            let mut out_file = std::fs::File::create(dest)
+                .with_context(|| format!("failed to create temp file: {}", dest.display()))?;
+            std::io::copy(&mut entry, &mut out_file)
+                .context("failed to extract portview binary from archive")?;
+            out_file.flush().context("failed to flush temp file")?;
+
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+                .context("failed to set executable permission on updated binary")?;
+            return Ok(());
+        }
+    }
+
+    drop(std::fs::remove_file(dest));
+    bail!("Archive does not contain a 'portview' binary. Download manually.")
+}
+
+/// Verify a downloaded file meets a minimum size; remove it and bail otherwise.
+fn verify_min_size(path: &Path, min_bytes: u64, kind: &str) -> Result<()> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to read downloaded file: {}", path.display()))?;
+    if meta.len() < min_bytes {
+        drop(std::fs::remove_file(path));
+        bail!(
+            "Downloaded file is too small ({} bytes) — likely not a valid {kind}.",
+            meta.len()
+        );
+    }
     Ok(())
 }
 
