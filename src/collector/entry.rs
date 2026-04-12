@@ -40,7 +40,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         listeners::Protocol::UDP => Protocol::Udp,
     };
 
-    let state = resolve_state(l, context.tcp_states);
+    let state = resolve_state(l.protocol, l.socket, context.tcp_states);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
@@ -125,9 +125,15 @@ fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn resolve_state(l: &listeners::Listener, tcp_states: &TcpStateIndex) -> State {
-    match l.protocol {
-        listeners::Protocol::TCP => tcp_states.get(&l.socket).copied().unwrap_or(State::Listen),
+fn resolve_state(
+    protocol: listeners::Protocol,
+    socket: std::net::SocketAddr,
+    tcp_states: &TcpStateIndex,
+) -> State {
+    match protocol {
+        // `listeners::get_all()` includes non-listening TCP sockets too, so a
+        // missing OS state lookup must stay `UNKNOWN` instead of guessing LISTEN.
+        listeners::Protocol::TCP => tcp_states.get(&socket).copied().unwrap_or(State::Unknown),
         listeners::Protocol::UDP => State::NotApplicable,
     }
 }
@@ -152,6 +158,8 @@ pub(super) fn process_refresh_kind(deep_enrichment: bool) -> ProcessRefreshKind 
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
     use super::*;
 
     #[test]
@@ -170,6 +178,27 @@ mod tests {
         assert!(
             process_executable_name(Some(exe_path)).is_none(),
             "paths without a usable file name should be ignored"
+        );
+    }
+
+    #[test]
+    fn missing_tcp_state_defaults_to_unknown() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000);
+        let listener = listeners::Listener {
+            process: listeners::Process {
+                pid: 1234,
+                name: "node".to_string(),
+                path: "/usr/bin/node".to_string(),
+            },
+            socket,
+            protocol: listeners::Protocol::TCP,
+        };
+        let tcp_states = TcpStateIndex::new();
+
+        assert_eq!(
+            resolve_state(listener.protocol, listener.socket, &tcp_states),
+            State::Unknown,
+            "missing TCP state data should stay UNKNOWN instead of guessing LISTEN"
         );
     }
 }

@@ -162,11 +162,11 @@ Default columns:
 
 Additional columns with `--full`:
 
-| Column  | Description                                                                                                             |
-| ------- | ----------------------------------------------------------------------------------------------------------------------- |
-| ADDRESS | Local bind IP address                                                                                                   |
-| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable. On Windows, this may fall back to a SID string instead of an account name        |
+| Column  | Description                                                                                                                        |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| ADDRESS | Local bind IP address                                                                                                              |
+| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, missing or ambiguous non-listener data shows `UNKNOWN`, UDP shows `-` |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, this may fall back to a SID string instead of an account name                   |
 
 ---
 
