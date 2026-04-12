@@ -352,13 +352,20 @@ fn parse_release_json(body: &str) -> Result<Release> {
 
 /// Compare two semver-like version strings.
 ///
-/// Compares numeric `MAJOR.MINOR.PATCH` segments first, then applies
-/// `SemVer` pre-release precedence (§11): a version without a pre-release
-/// tag has higher precedence than the same numeric triple with one.
-/// Build metadata (after `+`) is ignored per §10. Non-numeric core
-/// segments fall back to `0` so malformed upstream tags sort defensively.
+/// Strips a leading `v` / `V` prefix (common in GitHub release tags)
+/// before parsing. Compares numeric `MAJOR.MINOR.PATCH` segments first,
+/// then applies `SemVer` pre-release precedence (SS11): a version without
+/// a pre-release tag has higher precedence than the same numeric triple
+/// with one. Build metadata (after `+`) is ignored per SS10. Non-numeric
+/// core segments fall back to `0` so malformed upstream tags sort
+/// defensively.
 fn compare_versions(current: &str, remote: &str) -> Ordering {
     fn split(v: &str) -> (Vec<u64>, Option<&str>) {
+        // Strip leading `v` / `V` prefix common in GitHub release tags.
+        let v = v
+            .strip_prefix('v')
+            .or_else(|| v.strip_prefix('V'))
+            .unwrap_or(v);
         // Strip build metadata (`+...`) first, then split core from pre-release.
         let v = v.split('+').next().unwrap_or(v);
         let (core, pre) = match v.split_once('-') {
@@ -742,6 +749,35 @@ mod tests {
         assert_eq!(
             compare_versions("1.0.0-rc1+abc", "1.0.0-rc1+xyz"),
             Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn v_prefixed_tag_is_compared_correctly() {
+        assert_eq!(
+            compare_versions("0.1.0", "v0.2.0"),
+            Ordering::Less,
+            "v-prefixed remote should be parsed as 0.2.0"
+        );
+        assert_eq!(
+            compare_versions("0.1.0", "v1.0.0"),
+            Ordering::Less,
+            "v-prefixed major bump should be detected"
+        );
+        assert_eq!(
+            compare_versions("v1.0.0", "v1.0.0"),
+            Ordering::Equal,
+            "identical v-prefixed versions should be equal"
+        );
+        assert_eq!(
+            compare_versions("1.0.0", "V1.0.0"),
+            Ordering::Equal,
+            "uppercase V prefix should be stripped"
+        );
+        assert_eq!(
+            compare_versions("v1.0.0-rc1", "v1.0.0"),
+            Ordering::Less,
+            "v-prefixed pre-release should be less than release"
         );
     }
 
