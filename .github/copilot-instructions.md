@@ -78,6 +78,7 @@ src/
 | pico-args   | Minimal CLI argument parsing (zero dependencies)           |
 | anyhow      | Error handling with context                                |
 | serde/json  | JSON serialization for `--json` output                     |
+| httparse    | HTTP/1.x response header and chunk-size parsing            |
 | log         | Logging facade for debug diagnostics                       |
 | env_logger  | stderr logger controlled by `RUST_LOG`                     |
 

@@ -3,15 +3,16 @@
 //! Connects to the Docker or Podman socket and queries running containers
 //! to map published ports to container names and images.
 //!
-//! Uses raw HTTP/1.0 over Unix socket (Linux) or named pipe (Windows)
-//! with zero additional dependencies.
+//! Sends HTTP/1.0 requests over Unix socket (Linux) or named pipe (Windows).
+//! Response header parsing is handled by `httparse`; chunked transfer-encoding
+//! body framing uses `httparse::parse_chunk_size`.
 
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
@@ -683,7 +684,7 @@ fn fetch_unix_socket_json(path: &Path) -> Option<String> {
     response
 }
 
-fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
+fn send_http_request(stream: &mut (impl Read + std::io::Write)) -> Option<String> {
     stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
     let mut reader = BufReader::new(stream);
@@ -696,24 +697,45 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
     read_response_body(&mut reader, &headers)
 }
 
+/// Read HTTP response headers from a buffered reader using `httparse`.
+///
+/// Reads line-by-line until the header/body boundary (empty `\r\n` line),
+/// then delegates to `httparse::Response::parse` for robust parsing.
+/// The reader is left positioned at the start of the response body.
 fn read_response_headers(reader: &mut impl BufRead) -> Option<ParsedHeaders> {
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line).ok()?;
+    let mut raw = Vec::new();
 
-    let mut header_lines = Vec::new();
-    let mut line = String::new();
+    // Accumulate the status line and all header lines including the
+    // final empty CRLF. The BufReader remains positioned at the body.
     loop {
-        line.clear();
+        let mut line = String::new();
         if reader.read_line(&mut line).ok()? == 0 {
             return None;
         }
-        if line.trim().is_empty() {
+        let is_boundary = line == "\r\n" || line == "\n";
+        raw.extend_from_slice(line.as_bytes());
+        if is_boundary {
             break;
         }
-        header_lines.push(line.trim_end_matches(['\r', '\n']).to_string());
     }
 
-    parse_header_metadata(&status_line, header_lines.iter().map(String::as_str), 0)
+    let mut headers_buf = [httparse::EMPTY_HEADER; 32];
+    let mut response = httparse::Response::new(&mut headers_buf);
+
+    if response.parse(&raw).ok()?.is_partial() {
+        return None;
+    }
+
+    let status_ok = response.code.is_some_and(|c| (200..300).contains(&c));
+    let (content_length, transfer_encoding) = extract_header_metadata(response.headers);
+
+    Some(ParsedHeaders {
+        status_ok,
+        #[cfg(any(windows, test))]
+        body_offset: 0,
+        content_length,
+        transfer_encoding,
+    })
 }
 
 fn read_response_body(reader: &mut impl BufRead, headers: &ParsedHeaders) -> Option<String> {
@@ -745,7 +767,7 @@ fn read_chunked_body(reader: &mut impl BufRead) -> Option<Vec<u8>> {
             return None;
         }
 
-        let chunk_size = parse_chunk_size_line(&size_line)?;
+        let chunk_size = parse_streaming_chunk_size(&size_line)?;
         if chunk_size == 0 {
             consume_chunked_trailers(reader)?;
             return Some(body);
@@ -763,10 +785,15 @@ fn read_chunked_body(reader: &mut impl BufRead) -> Option<Vec<u8>> {
     }
 }
 
-fn parse_chunk_size_line(line: &str) -> Option<usize> {
-    let trimmed = line.trim_end_matches(['\r', '\n']);
-    let size = trimmed.split_once(';').map_or(trimmed, |(value, _)| value);
-    usize::from_str_radix(size.trim(), 16).ok()
+/// Parse a chunk size line using `httparse::parse_chunk_size`.
+///
+/// Wraps the standard httparse API for the streaming (line-at-a-time)
+/// reader path where we have a single line as a string.
+fn parse_streaming_chunk_size(line: &str) -> Option<usize> {
+    match httparse::parse_chunk_size(line.as_bytes()) {
+        Ok(httparse::Status::Complete((_, size))) => usize::try_from(size).ok(),
+        _ => None,
+    }
 }
 
 fn consume_chunked_trailers(reader: &mut impl BufRead) -> Option<()> {
@@ -929,42 +956,27 @@ struct ParsedHeaders {
     transfer_encoding: TransferEncoding,
 }
 
-fn parse_header_metadata<'a>(
-    status_line: &str,
-    header_lines: impl Iterator<Item = &'a str>,
-    body_offset: usize,
-) -> Option<ParsedHeaders> {
-    #[cfg(not(any(windows, test)))]
-    let _ = body_offset;
-
-    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
-    let status_ok = (200..300).contains(&status_code);
-
+/// Extract `Content-Length` and `Transfer-Encoding` from parsed headers.
+///
+/// Header names are matched case-insensitively, which `httparse` already
+/// provides as raw `&[u8]` slices.
+fn extract_header_metadata(headers: &[httparse::Header<'_>]) -> (Option<usize>, TransferEncoding) {
     let mut content_length = None;
     let mut transfer_encoding = TransferEncoding::Identity;
 
-    for line in header_lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-
-        if name.eq_ignore_ascii_case("Content-Length") {
-            content_length = value.trim().parse().ok();
-            continue;
-        }
-
-        if name.eq_ignore_ascii_case("Transfer-Encoding") {
+    for header in headers {
+        if header.name.eq_ignore_ascii_case("Content-Length") {
+            if let Ok(value) = std::str::from_utf8(header.value) {
+                content_length = value.trim().parse().ok();
+            }
+        } else if header.name.eq_ignore_ascii_case("Transfer-Encoding")
+            && let Ok(value) = std::str::from_utf8(header.value)
+        {
             transfer_encoding = parse_transfer_encoding(value);
         }
     }
 
-    Some(ParsedHeaders {
-        status_ok,
-        #[cfg(any(windows, test))]
-        body_offset,
-        content_length,
-        transfer_encoding,
-    })
+    (content_length, transfer_encoding)
 }
 
 fn parse_transfer_encoding(value: &str) -> TransferEncoding {
@@ -995,16 +1007,25 @@ fn parse_transfer_encoding(value: &str) -> TransferEncoding {
 /// Try to locate and parse the HTTP response headers in `response`.
 ///
 /// Returns `None` if the header/body boundary (`\r\n\r\n`) has not yet
-/// been received. Performs a single scan over the accumulated buffer.
+/// been received. Uses `httparse::Response::parse` for robust parsing.
 #[cfg(any(windows, test))]
 fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
-    let text = std::str::from_utf8(response).ok()?;
-    let headers_end = text.find("\r\n\r\n")?;
-    let body_offset = headers_end + 4;
+    let mut headers_buf = [httparse::EMPTY_HEADER; 32];
+    let mut parsed = httparse::Response::new(&mut headers_buf);
 
-    let mut header_lines = text[..headers_end].split("\r\n");
-    let status_line = header_lines.next()?;
-    parse_header_metadata(status_line, header_lines, body_offset)
+    let Ok(httparse::Status::Complete(body_offset)) = parsed.parse(response) else {
+        return None;
+    };
+
+    let status_ok = parsed.code.is_some_and(|c| (200..300).contains(&c));
+    let (content_length, transfer_encoding) = extract_header_metadata(parsed.headers);
+
+    Some(ParsedHeaders {
+        status_ok,
+        body_offset,
+        content_length,
+        transfer_encoding,
+    })
 }
 
 /// Extract the body from a fully received (EOF) response, using
@@ -1075,8 +1096,11 @@ fn decode_chunked_body(body: &[u8]) -> Result<Option<Vec<u8>>, ()> {
             return Ok(None);
         };
 
-        let size_line = std::str::from_utf8(&body[offset..line_end]).map_err(|_| ())?;
-        let chunk_size = parse_chunk_size_line(size_line).ok_or(())?;
+        let chunk_line = body.get(offset..line_end + 2).ok_or(())?;
+        let chunk_size = match httparse::parse_chunk_size(chunk_line) {
+            Ok(httparse::Status::Complete((_, size))) => usize::try_from(size).map_err(|_| ())?,
+            _ => return Err(()),
+        };
         offset = line_end + 2;
 
         if chunk_size == 0 {
