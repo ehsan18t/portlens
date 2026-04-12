@@ -7,135 +7,209 @@ use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, bail};
 use portview::{collector, display, filter};
-use tracing_subscriber::EnvFilter;
 
 /// Exit code for runtime errors (failed to enumerate sockets, write errors).
-/// Usage errors (invalid flags) are handled by clap with exit code 2.
 const EXIT_RUNTIME_ERROR: u8 = 1;
+/// Exit code for CLI usage errors (invalid flags, conflicting options).
+const EXIT_USAGE_ERROR: u8 = 2;
 
-/// portview - list open network ports and their associated processes.
+/// Parsed command-line arguments.
 // CLI structs inherently use multiple boolean flags for argument toggling.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Parser, Debug)]
-#[command(name = "portview", version, about, long_about = None)]
+#[derive(Debug)]
 struct Cli {
-    /// Show only TCP sockets.
-    #[arg(short = 't', long = "tcp", conflicts_with = "udp")]
     tcp: bool,
-
-    /// Show only UDP sockets.
-    #[arg(short = 'u', long = "udp", conflicts_with = "tcp")]
     udp: bool,
-
-    /// Show only sockets in LISTEN state (TCP only).
-    #[arg(short = 'l', long = "listen", conflicts_with = "udp")]
     listen: bool,
-
-    /// Filter results to a specific port number and bypass smart relevance filtering.
-    #[arg(short = 'p', long = "port")]
     port: Option<u16>,
-
-    /// Show all ports (disable developer-relevant filter).
-    #[arg(short = 'a', long = "all")]
     all: bool,
-
-    /// Show all columns (adds STATE, USER).
-    #[arg(short = 'f', long = "full")]
     full: bool,
-
-    /// Use compact borderless table style.
-    #[arg(short = 'c', long = "compact")]
     compact: bool,
-
-    /// Suppress the column header row.
-    #[arg(long = "no-header")]
     no_header: bool,
-
-    /// Output results as a JSON array.
-    #[arg(long = "json")]
     json: bool,
-
-    /// Disable Docker/Podman and project-root enrichment. Combine with --all for the rawest view.
-    #[arg(long = "no-enrich")]
     no_enrich: bool,
-
-    #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Subcommand, Debug)]
+/// Subcommand dispatch.
+#[derive(Debug)]
 enum Command {
     /// Check for updates and optionally self-update the binary.
     Update {
         /// Only check for a new version without downloading or installing.
-        #[arg(long = "check")]
         check: bool,
     },
 }
 
 fn main() -> ExitCode {
-    if let Err(e) = init_tracing().and_then(|()| run()) {
+    init_logger();
+
+    let args = normalize_args();
+
+    // Handle --help / --version before the parser so they short-circuit
+    // even when combined with otherwise-invalid flags.
+    for arg in &args {
+        match arg.to_str() {
+            Some("--help" | "-h") => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            Some("--version" | "-v") => {
+                print_version();
+                return ExitCode::SUCCESS;
+            }
+            _ => {}
+        }
+    }
+
+    let cli = match parse_cli(args) {
+        Ok(cli) => cli,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            eprintln!();
+            eprintln!("Try 'portview --help' for more information.");
+            return ExitCode::from(EXIT_USAGE_ERROR);
+        }
+    };
+
+    if let Err(e) = run(cli) {
         eprintln!("error: {e:#}");
         return ExitCode::from(EXIT_RUNTIME_ERROR);
     }
     ExitCode::SUCCESS
 }
 
-fn init_tracing() -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("off"))
-        .context("failed to build tracing filter")?;
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init()
-        .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))?;
-
-    Ok(())
+/// Initialize stderr logger. Reads `RUST_LOG` (default: off). Safe to call
+/// once; `try_init` silently ignores duplicate initialization if it occurs.
+fn init_logger() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off"))
+        .target(env_logger::Target::Stderr)
+        .try_init();
 }
 
 /// Normalize CLI arguments to lowercase for case-insensitive matching.
 ///
-/// Replaces argv\[0\] with the fixed string `"portview"` and lowercases
-/// every remaining argument. Overwriting argv\[0\] is intentional: the
-/// OS-provided value can be set to arbitrary text by a parent process
-/// (e.g. via `execve`), and clap only uses it cosmetically for the
-/// program name in `--help` output. Pinning it to a constant keeps that
-/// output deterministic and ensures no untrusted argv\[0\] data flows
-/// into argument parsing.
-///
-/// Lowercasing the remaining arguments is safe because portview has no
-/// string-valued arguments — only numeric port values, flags, and
-/// subcommand names, none of which are affected by lowercasing.
+/// Skips argv\[0\] (the program name/path) and returns the rest lowercased.
+/// Safe because portview has no string-valued arguments — only numeric
+/// port values, flags, and subcommand names, none of which are affected
+/// by lowercasing.
 fn normalize_args() -> Vec<OsString> {
-    // Skip the OS-provided argv[0] and substitute a known-safe constant
-    // so clap's help output is deterministic regardless of how the
-    // binary was launched.
-    std::iter::once(OsString::from("portview"))
-        .chain(std::env::args_os().skip(1).map(|arg| {
-            // Convert to UTF-8 for lowercasing; fall back to original if
-            // the argument contains non-UTF-8 bytes (unlikely on any
-            // supported platform).
+    std::env::args_os()
+        .skip(1)
+        .map(|arg| {
             arg.into_string().map_or_else(
                 |original| original,
                 |s| OsString::from(s.to_ascii_lowercase()),
             )
-        }))
+        })
         .collect()
 }
 
-/// Application entry point, separated from `main()` for testability.
-fn run() -> Result<()> {
-    let cli = Cli::parse_from(normalize_args());
+/// Parse CLI arguments into a [`Cli`] struct.
+///
+/// Subcommands are detected by scanning for the literal token `update`;
+/// anything after it is consumed by the subcommand parser.
+fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
+    let update_idx = args.iter().position(|a| a == "update");
 
+    let (main_args, command) = if let Some(idx) = update_idx {
+        let main: Vec<OsString> = args[..idx].to_vec();
+        let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
+
+        let mut sub_pargs = pico_args::Arguments::from_vec(sub_args);
+        let check = sub_pargs.contains("--check");
+        let remaining = sub_pargs.finish();
+        if !remaining.is_empty() {
+            bail!("unexpected arguments for 'update' subcommand: {remaining:?}");
+        }
+        (main, Some(Command::Update { check }))
+    } else {
+        (args, None)
+    };
+
+    let mut pargs = pico_args::Arguments::from_vec(main_args);
+
+    let tcp = pargs.contains(["-t", "--tcp"]);
+    let udp = pargs.contains(["-u", "--udp"]);
+    let listen = pargs.contains(["-l", "--listen"]);
+    let port: Option<u16> = pargs
+        .opt_value_from_str(["-p", "--port"])
+        .context("invalid value for '--port' (expected an integer in 0..=65535)")?;
+    let all = pargs.contains(["-a", "--all"]);
+    let full = pargs.contains(["-f", "--full"]);
+    let compact = pargs.contains(["-c", "--compact"]);
+    let no_header = pargs.contains("--no-header");
+    let json = pargs.contains("--json");
+    let no_enrich = pargs.contains("--no-enrich");
+
+    // Replicate clap's `conflicts_with` validation.
+    if tcp && udp {
+        bail!("the argument '--tcp' cannot be used with '--udp'");
+    }
+    if listen && udp {
+        bail!("the argument '--listen' cannot be used with '--udp'");
+    }
+
+    let remaining = pargs.finish();
+    if !remaining.is_empty() {
+        bail!("unexpected arguments: {remaining:?}");
+    }
+
+    Ok(Cli {
+        tcp,
+        udp,
+        listen,
+        port,
+        all,
+        full,
+        compact,
+        no_header,
+        json,
+        no_enrich,
+        command,
+    })
+}
+
+fn print_help() {
+    let version = env!("CARGO_PKG_VERSION");
+    println!("portview {version}");
+    println!("List open network ports and their associated processes.");
+    println!();
+    println!("Usage: portview [OPTIONS] [COMMAND]");
+    println!();
+    println!("Commands:");
+    println!("  update  Check for updates and optionally self-update the binary");
+    println!();
+    println!("Options:");
+    println!("  -t, --tcp            Show only TCP sockets");
+    println!("  -u, --udp            Show only UDP sockets");
+    println!("  -l, --listen         Show only sockets in LISTEN state (TCP only)");
+    println!("  -p, --port <PORT>    Filter results to a specific port number");
+    println!("  -a, --all            Show all ports (disable developer-relevant filter)");
+    println!("  -f, --full           Show all columns (adds STATE, USER)");
+    println!("  -c, --compact        Use compact borderless table style");
+    println!("      --no-header      Suppress the column header row");
+    println!("      --json           Output results as a JSON array");
+    println!("      --no-enrich      Disable Docker/Podman and project-root enrichment");
+    println!("  -h, --help           Print help");
+    println!("  -v, --version        Print version");
+    println!();
+    println!("Subcommand 'update' options:");
+    println!("      --check          Only check for a new version; do not install");
+}
+
+fn print_version() {
+    println!("portview {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// Application entry point, separated from `main()` for testability.
+fn run(cli: Cli) -> Result<()> {
     // Dispatch to subcommand if present
-    if let Some(command) = &cli.command {
+    if let Some(command) = cli.command {
         return match command {
-            Command::Update { check } => portview::update::run(*check),
+            Command::Update { check } => portview::update::run(check),
         };
     }
 

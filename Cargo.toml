@@ -30,18 +30,13 @@ non_ascii_idents = "deny"
 [dependencies]
 listeners = "0.5"
 sysinfo = "0.38"
-clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+pico-args = "0.5"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
-[target.'cfg(unix)'.dependencies.tar]
-version = "0.4"
-
-[target.'cfg(unix)'.dependencies.flate2]
-version = "1"
-
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
+httparse = { version = "1", default-features = false }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

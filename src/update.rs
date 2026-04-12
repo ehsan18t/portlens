@@ -14,6 +14,10 @@
 //! HTTP requests are delegated to `curl` (ships with Windows 10+ and
 //! virtually all Linux distributions) to avoid pulling in a TLS library
 //! that would break cross-platform clippy checks.
+//!
+//! Archive extraction on Linux is delegated to the system `tar` command
+//! (part of coreutils on every Linux distribution), which avoids pulling
+//! in the `tar` + `flate2` Rust crates and their transitive dependencies.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -428,70 +432,99 @@ fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     eprintln!("Downloading update...");
 
     let temp_archive = temp_path_beside(binary_path, ".tar.gz")?;
-    let temp_binary = temp_path_beside(binary_path, "")?;
+    let extract_dir = temp_path_beside(binary_path, ".extract")?;
 
     curl_download_file(url, &temp_archive)?;
     verify_min_size(&temp_archive, 1024, "archive")?;
 
-    let extract_result = extract_portview_binary(&temp_archive, &temp_binary);
-    drop(std::fs::remove_file(&temp_archive));
-    extract_result?;
+    // Extract via the system `tar` command (ships with every Linux distro).
+    // This avoids a dependency on the `tar` and `flate2` Rust crates.
+    if extract_dir.exists() {
+        drop(std::fs::remove_dir_all(&extract_dir));
+    }
+    std::fs::create_dir_all(&extract_dir).with_context(|| {
+        format!(
+            "failed to create extraction directory: {}",
+            extract_dir.display()
+        )
+    })?;
 
-    // Atomic replace: rename temp over current binary
-    std::fs::rename(&temp_binary, binary_path).with_context(|| {
+    let status = ProcessCommand::new("tar")
+        .arg("-xzf")
+        .arg(&temp_archive)
+        .arg("-C")
+        .arg(&extract_dir)
+        .status()
+        .context(
+            "failed to run tar. Is tar installed?\n  \
+             On Linux install it via your package manager (e.g. apt install tar).",
+        )?;
+
+    // Clean up archive regardless of extraction outcome
+    drop(std::fs::remove_file(&temp_archive));
+
+    if !status.success() {
+        drop(std::fs::remove_dir_all(&extract_dir));
+        bail!(
+            "tar extraction failed (exit code {}).",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    // Locate the extracted `portview` binary (may be at root or in a subdirectory)
+    let temp_binary = find_portview_in_dir(&extract_dir).with_context(|| {
+        format!(
+            "Archive does not contain a 'portview' binary: {}",
+            extract_dir.display()
+        )
+    })?;
+
+    // Set executable permission
+    let permissions = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(&temp_binary, permissions)
+        .context("failed to set executable permission on updated binary")?;
+
+    // Atomic replace: rename extracted binary over current binary
+    let rename_result = std::fs::rename(&temp_binary, binary_path).with_context(|| {
         format!(
             "Failed to replace binary. Try running with sudo.\n  Path: {}",
             binary_path.display()
         )
-    })?;
+    });
 
-    Ok(())
+    // Best-effort cleanup of extraction directory
+    drop(std::fs::remove_dir_all(&extract_dir));
+
+    rename_result
 }
 
+/// Recursively search `dir` for a file named `portview` and return its path.
 #[cfg(unix)]
-fn extract_portview_binary(archive_path: &Path, dest: &Path) -> Result<()> {
-    let file = std::fs::File::open(archive_path)
-        .with_context(|| format!("failed to open archive: {}", archive_path.display()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .context("failed to read tar archive entries")?;
-
-    for entry_result in entries {
-        let mut entry = entry_result.context("failed to read tar entry")?;
-        if entry_is_portview(&entry)? {
-            return write_executable(&mut entry, dest);
+fn find_portview_in_dir(dir: &Path) -> Result<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current)
+            .with_context(|| format!("failed to read directory: {}", current.display()))?;
+        for entry in entries {
+            let entry = entry.context("failed to read directory entry")?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to stat: {}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file()
+                && path.file_name().and_then(|n| n.to_str()) == Some("portview")
+            {
+                return Ok(path);
+            }
         }
     }
-
-    drop(std::fs::remove_file(dest));
-    bail!("Archive does not contain a 'portview' binary. Download manually.")
-}
-
-/// Return true if the tar entry's basename is exactly `portview`.
-#[cfg(unix)]
-fn entry_is_portview<R: std::io::Read>(entry: &tar::Entry<'_, R>) -> Result<bool> {
-    let path = entry.path().context("failed to read tar entry path")?;
-    Ok(path.file_name().and_then(|n| n.to_str()) == Some("portview"))
-}
-
-/// Write `src` to `dest`, flush it, and mark it executable (mode 0o755).
-#[cfg(unix)]
-fn write_executable<R: std::io::Read>(src: &mut R, dest: &Path) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut out_file = std::fs::File::create(dest)
-        .with_context(|| format!("failed to create temp file: {}", dest.display()))?;
-    std::io::copy(src, &mut out_file).context("failed to extract portview binary from archive")?;
-    out_file.flush().context("failed to flush temp file")?;
-    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
-        .context("failed to set executable permission on updated binary")?;
-    Ok(())
+    bail!("no 'portview' binary found under {}", dir.display())
 }
 
 /// Verify a downloaded file meets a minimum size; remove it and bail otherwise.

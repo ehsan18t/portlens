@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
+use log::debug;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tracing::debug;
 
 use crate::docker::{self, ContainerPortMap};
 use crate::types::{PortEntry, Protocol, State};
@@ -89,10 +89,10 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
     tracked_pids.sort_unstable();
     tracked_pids.dedup();
     debug!(
-        deep_enrichment = options.deep_enrichment,
-        listeners = raw_listeners.len(),
-        tracked_pids = tracked_pids.len(),
-        "enumerated raw listeners"
+        "enumerated raw listeners: deep_enrichment={} listeners={} tracked_pids={}",
+        options.deep_enrichment,
+        raw_listeners.len(),
+        tracked_pids.len()
     );
 
     // `false` = do not remove previously-tracked dead processes. On a
@@ -166,7 +166,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
                 right.process.as_str(),
             ))
     });
-    debug!(entries = entries.len(), "finished socket collection");
+    debug!("finished socket collection: entries={}", entries.len());
     Ok(entries)
 }
 
@@ -416,7 +416,10 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
         return;
     };
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
         let parsed = if ipv6 {
             parse_linux_tcp6_table_entry(&line)
         } else {
@@ -426,6 +429,7 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
         if let Some((socket, state)) = parsed {
             merge_tcp_state(index, socket, state);
         }
+        line.clear();
     }
 }
 
