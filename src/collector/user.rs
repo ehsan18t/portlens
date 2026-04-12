@@ -9,14 +9,23 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 #[cfg(unix)]
 use std::mem::MaybeUninit;
+use std::sync::Arc;
 
 /// Cache for resolved usernames, keyed by the OS-specific identity.
+///
+/// Values are `Arc<str>` so every `PortEntry` owned by the same user
+/// shares one heap allocation; cache clones are refcount bumps.
 #[derive(Default)]
 pub(super) struct UserResolver {
     #[cfg(unix)]
-    pub names_by_uid: HashMap<libc::uid_t, String>,
+    pub names_by_uid: HashMap<libc::uid_t, Arc<str>>,
     #[cfg(windows)]
-    pub names_by_pid: HashMap<u32, String>,
+    pub names_by_pid: HashMap<u32, Arc<str>>,
+}
+
+#[inline]
+fn unknown_user() -> Arc<str> {
+    Arc::from("-")
 }
 
 // ---------------------------------------------------------------------------
@@ -31,22 +40,23 @@ pub(super) fn resolve_user(
     process: Option<&sysinfo::Process>,
     _pid: u32,
     resolver: &mut UserResolver,
-) -> String {
+) -> Arc<str> {
     let Some(proc_ref) = process else {
-        return "-".to_string();
+        return unknown_user();
     };
 
     let Some(uid) = proc_ref.user_id() else {
-        return "-".to_string();
+        return unknown_user();
     };
 
     let uid = **uid;
     if let Some(cached) = resolver.names_by_uid.get(&uid) {
-        return cached.clone();
+        return Arc::clone(cached);
     }
 
-    let name = lookup_unix_username(uid).unwrap_or_else(|| "-".to_string());
-    resolver.names_by_uid.insert(uid, name.clone());
+    let name: Arc<str> =
+        lookup_unix_username(uid).map_or_else(unknown_user, |s| Arc::from(s.as_str()));
+    resolver.names_by_uid.insert(uid, Arc::clone(&name));
     name
 }
 
@@ -109,15 +119,17 @@ pub(super) fn resolve_user(
     process: Option<&sysinfo::Process>,
     pid: u32,
     resolver: &mut UserResolver,
-) -> String {
+) -> Arc<str> {
     if let Some(cached) = resolver.names_by_pid.get(&pid) {
-        return cached.clone();
+        return Arc::clone(cached);
     }
 
-    let name = process
+    let name: Arc<str> = process
         .and_then(sysinfo::Process::user_id)
-        .map_or_else(|| "-".to_string(), format_windows_user_id);
-    resolver.names_by_pid.insert(pid, name.clone());
+        .map_or_else(unknown_user, |uid| {
+            Arc::from(format_windows_user_id(uid).as_str())
+        });
+    resolver.names_by_pid.insert(pid, Arc::clone(&name));
     name
 }
 
@@ -135,8 +147,8 @@ pub(super) fn resolve_user(
     _process: Option<&sysinfo::Process>,
     _pid: u32,
     _resolver: &mut UserResolver,
-) -> String {
-    "-".to_string()
+) -> Arc<str> {
+    unknown_user()
 }
 
 // ---------------------------------------------------------------------------

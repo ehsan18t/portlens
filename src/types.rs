@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -122,9 +123,16 @@ pub struct PortEntry {
     /// Process identifier owning this socket.
     pub pid: u32,
     /// Process executable name.
-    pub process: String,
+    ///
+    /// Stored as `Arc<str>` so that many `PortEntry` rows sharing the same
+    /// process name (for example worker-pool processes) share a single
+    /// heap allocation via cheap refcount bumps.
+    pub process: Arc<str>,
     /// Owning user or account name, or `"-"` if unavailable.
-    pub user: String,
+    ///
+    /// Stored as `Arc<str>` so that all entries owned by the same user
+    /// share one allocation produced by the user-resolver cache.
+    pub user: Arc<str>,
     /// Project folder name or Docker container name.
     pub project: Option<String>,
     /// Detected app/framework label, for example "Next.js" or `PostgreSQL`.

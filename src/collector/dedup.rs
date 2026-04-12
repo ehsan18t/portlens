@@ -130,7 +130,7 @@ fn compare_entry_enrichment(left: &PortEntry, right: &PortEntry) -> Ordering {
 fn compare_entry_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
     compare_entry_enrichment(left, right)
         .then_with(|| right.pid.cmp(&left.pid))
-        .then_with(|| right.process.as_str().cmp(left.process.as_str()))
+        .then_with(|| (*right.process).cmp(&*left.process))
 }
 
 fn compare_proxy_cluster_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
@@ -180,7 +180,7 @@ fn enrichment_score(e: &PortEntry) -> u8 {
     if e.uptime_secs.is_some() {
         score += 1;
     }
-    if e.user != "-" {
+    if *e.user != *"-" {
         score += 1;
     }
     score
@@ -199,8 +199,8 @@ mod tests {
             proto,
             state: State::Listen,
             pid: 1000,
-            process: "test".to_string(),
-            user: "-".to_string(),
+            process: "test".into(),
+            user: "-".into(),
             project: None,
             app: None,
             uptime_secs: None,
@@ -248,11 +248,11 @@ mod tests {
     fn dedup_preserves_same_port_different_processes_without_enrichment() {
         let mut first = make_entry(8080, Protocol::Tcp);
         first.pid = 1001;
-        first.process = "worker-a".to_string();
+        first.process = "worker-a".into();
 
         let mut second = make_entry(8080, Protocol::Tcp);
         second.pid = 1002;
-        second.process = "worker-b".to_string();
+        second.process = "worker-b".into();
 
         let result = deduplicate(vec![first, second]);
         assert_eq!(
@@ -283,21 +283,21 @@ mod tests {
         let mut ipv4 = make_entry(5432, Protocol::Tcp);
         ipv4.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         ipv4.pid = 2001;
-        ipv4.process = "com.docker.backend.exe".to_string();
+        ipv4.process = "com.docker.backend.exe".into();
         ipv4.project = Some("ecom-postgres".to_string());
         ipv4.app = Some("PostgreSQL".into());
 
         let mut ipv6 = make_entry(5432, Protocol::Tcp);
         ipv6.local_addr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
         ipv6.pid = 2001;
-        ipv6.process = "com.docker.backend.exe".to_string();
+        ipv6.process = "com.docker.backend.exe".into();
         ipv6.project = Some("ecom-postgres".to_string());
         ipv6.app = Some("PostgreSQL".into());
 
         let mut relay = make_entry(5432, Protocol::Tcp);
         relay.local_addr = IpAddr::V6(Ipv6Addr::LOCALHOST);
         relay.pid = 2002;
-        relay.process = "wslrelay.exe".to_string();
+        relay.process = "wslrelay.exe".into();
         relay.project = Some("ecom-postgres".to_string());
         relay.app = Some("PostgreSQL".into());
 
@@ -318,11 +318,11 @@ mod tests {
     fn dedup_prefers_enriched_entry() {
         let mut bare = make_entry(5432, Protocol::Tcp);
         bare.pid = 1001;
-        bare.process = "wslrelay.exe".to_string();
+        bare.process = "wslrelay.exe".into();
 
         let mut enriched = make_entry(5432, Protocol::Tcp);
         enriched.pid = 1002;
-        enriched.process = "com.docker.backend.exe".to_string();
+        enriched.process = "com.docker.backend.exe".into();
         enriched.project = Some("my-postgres".to_string());
         enriched.app = Some("PostgreSQL".into());
         enriched.uptime_secs = Some(3600);
@@ -341,12 +341,12 @@ mod tests {
     fn dedup_keeps_distinct_enriched_workers() {
         let mut first = make_entry(8080, Protocol::Tcp);
         first.pid = 1001;
-        first.process = "nginx".to_string();
+        first.process = "nginx".into();
         first.app = Some("Nginx".into());
 
         let mut second = make_entry(8080, Protocol::Tcp);
         second.pid = 1002;
-        second.process = "nginx".to_string();
+        second.process = "nginx".into();
         second.app = Some("Nginx".into());
 
         let result = deduplicate(vec![first, second]);
@@ -361,13 +361,13 @@ mod tests {
     fn dedup_drops_proxy_when_real_process_exists() {
         let mut proxy = make_entry(5432, Protocol::Tcp);
         proxy.pid = 1001;
-        proxy.process = "wslrelay.exe".to_string();
+        proxy.process = "wslrelay.exe".into();
         proxy.project = Some("my-postgres".to_string());
         proxy.app = Some("PostgreSQL".into());
 
         let mut real = make_entry(5432, Protocol::Tcp);
         real.pid = 1002;
-        real.process = "postgres".to_string();
+        real.process = "postgres".into();
         real.app = Some("PostgreSQL".into());
 
         let result = deduplicate(vec![proxy, real]);
@@ -376,18 +376,18 @@ mod tests {
             1,
             "docker proxy rows should yield to real processes"
         );
-        assert_eq!(result[0].process, "postgres");
+        assert_eq!(&*result[0].process, "postgres");
     }
 
     #[test]
     fn dedup_keeps_proxy_named_process_without_docker_enrichment() {
         let mut proxy_named = make_entry(8080, Protocol::Tcp);
         proxy_named.pid = 1001;
-        proxy_named.process = "docker-proxy.exe".to_string();
+        proxy_named.process = "docker-proxy.exe".into();
 
         let mut real = make_entry(8080, Protocol::Tcp);
         real.pid = 1002;
-        real.process = "my-app".to_string();
+        real.process = "my-app".into();
 
         let result = deduplicate(vec![proxy_named, real]);
         assert_eq!(
@@ -409,7 +409,7 @@ mod tests {
         entry.project = Some("proj".to_string());
         entry.app = Some("App".into());
         entry.uptime_secs = Some(100);
-        entry.user = "admin".to_string();
+        entry.user = "admin".into();
         assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");
     }
 

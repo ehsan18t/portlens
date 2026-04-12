@@ -18,8 +18,9 @@ mod resolve;
 mod tcp_state;
 mod user;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use log::debug;
@@ -44,6 +45,7 @@ pub(in crate::collector) struct CollectContext<'a> {
     pub(in crate::collector) now_epoch: u64,
     pub(in crate::collector) deep_enrichment: bool,
     pub(in crate::collector) project_cache: &'a mut HashMap<PathBuf, Option<PathBuf>>,
+    pub(in crate::collector) process_names: &'a mut HashSet<Arc<str>>,
     pub(in crate::collector) home: Option<&'a Path>,
     #[cfg(target_os = "linux")]
     pub(in crate::collector) podman_rootless_resolver: &'a mut docker::RootlessPodmanResolver,
@@ -122,6 +124,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     let mut project_cache: HashMap<PathBuf, Option<PathBuf>> =
         HashMap::with_capacity(raw_listeners.len());
+    let mut process_names: HashSet<Arc<str>> = HashSet::new();
     #[cfg(target_os = "linux")]
     let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
 
@@ -140,6 +143,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         now_epoch,
         deep_enrichment: options.deep_enrichment,
         project_cache: &mut project_cache,
+        process_names: &mut process_names,
         home: home.as_deref(),
         #[cfg(target_os = "linux")]
         podman_rootless_resolver: &mut podman_rootless_resolver,
@@ -157,14 +161,14 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
             left.local_addr,
             left.proto,
             left.pid,
-            left.process.as_str(),
+            &*left.process,
         )
             .cmp(&(
                 right.port,
                 right.local_addr,
                 right.proto,
                 right.pid,
-                right.process.as_str(),
+                &*right.process,
             ))
     });
     debug!("finished socket collection: entries={}", entries.len());

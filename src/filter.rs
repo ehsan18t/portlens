@@ -80,8 +80,8 @@ mod tests {
             proto,
             state,
             pid: 1234,
-            process: "test".to_string(),
-            user: "user".to_string(),
+            process: "test".into(),
+            user: "user".into(),
             project: None,
             app: None,
             uptime_secs: None,
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn relevance_filter_keeps_entry_with_app_from_known_process() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
-        entry.process = "node".to_string();
+        entry.process = "node".into();
         // The collector populates `app` via framework::detect for known processes.
         entry.app = Some("Node.js".into());
         let result = apply(vec![entry], &default_filter());
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn relevance_filter_recognizes_app_from_exe_suffix() {
         let mut entry = make_entry(80, Protocol::Tcp, State::Listen);
-        entry.process = "nginx.exe".to_string();
+        entry.process = "nginx.exe".into();
         // The collector populates `app` via framework::detect for known processes.
         entry.app = Some("Nginx".into());
         let result = apply(vec![entry], &default_filter());
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn relevance_filter_recognizes_app_from_capitalized_name() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
-        entry.process = "Python".to_string();
+        entry.process = "Python".into();
         // The collector populates `app` via framework::detect for known processes.
         entry.app = Some("Python".into());
         let result = apply(vec![entry], &default_filter());

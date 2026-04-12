@@ -4,7 +4,9 @@
 //! sysinfo, queries the caches in [`CollectContext`], and assembles the
 //! final enrichment fields (container, project, framework, uptime).
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
@@ -15,6 +17,20 @@ use super::CollectContext;
 use super::resolve;
 use super::tcp_state::TcpStateIndex;
 use super::user;
+
+/// Intern a process name into the shared `Arc<str>` set.
+///
+/// Worker-pool processes (php-fpm, node clusters, puma workers) fan out
+/// across dozens of PIDs that share the same name; interning collapses
+/// those to one heap allocation shared via refcount bumps.
+pub(super) fn intern_process_name(cache: &mut HashSet<Arc<str>>, name: &str) -> Arc<str> {
+    if let Some(existing) = cache.get(name) {
+        return Arc::clone(existing);
+    }
+    let arc: Arc<str> = Arc::from(name);
+    cache.insert(Arc::clone(&arc));
+    arc
+}
 
 /// Build a single [`PortEntry`] from a [`listeners::Listener`], enriching it
 /// with Docker, project, framework, and uptime information.
@@ -86,13 +102,15 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         }
     });
 
+    let process = intern_process_name(context.process_names, &l.process.name);
+
     PortEntry {
         port: l.socket.port(),
         local_addr: l.socket.ip(),
         proto,
         state,
         pid: l.process.pid,
-        process: l.process.name.clone(),
+        process,
         user,
         project: project_name,
         app,
