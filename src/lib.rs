@@ -13,6 +13,9 @@
 //! - [`collector`] - socket enumeration + process/project/app enrichment
 //! - [`filter`] - CLI filters and developer-relevance filter
 //! - [`display`] - renders results as bordered/compact table or JSON
+//!   - `table` — column definitions and table rendering engine
+//!   - `tips` — "Quick Actions" footer panel with adaptive layout
+//!   - `terminal` — terminal width detection and UTF-8 support probing
 //! - [`docker`] - Docker/Podman container detection via socket API
 //! - [`project`] - project root detection via marker file walk
 //! - [`framework`] - app/framework detection from images, configs, process names

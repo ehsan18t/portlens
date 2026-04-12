@@ -307,29 +307,81 @@ fn parse_release_json(body: &str) -> Result<Release> {
 // Version comparison
 // ---------------------------------------------------------------------------
 
-/// Compare two semver-like version strings numerically.
+/// Compare two semver-like version strings.
 ///
-/// Splits on `.` and compares each segment as a number. Returns
-/// `Ordering::Less` when `current` is older than `remote`.
+/// Compares numeric `MAJOR.MINOR.PATCH` segments first, then applies
+/// `SemVer` pre-release precedence (§11): a version without a pre-release
+/// tag has higher precedence than the same numeric triple with one.
+/// Build metadata (after `+`) is ignored per §10. Non-numeric core
+/// segments fall back to `0` so malformed upstream tags sort defensively.
 fn compare_versions(current: &str, remote: &str) -> Ordering {
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
+    fn split(v: &str) -> (Vec<u64>, Option<&str>) {
+        // Strip build metadata (`+...`) first, then split core from pre-release.
+        let v = v.split('+').next().unwrap_or(v);
+        let (core, pre) = match v.split_once('-') {
+            Some((c, p)) => (c, Some(p)),
+            None => (v, None),
+        };
+        let nums = core
+            .split('.')
             .map(|seg| seg.parse::<u64>().unwrap_or(0))
-            .collect()
-    };
+            .collect();
+        (nums, pre)
+    }
 
-    let c = parse(current);
-    let r = parse(remote);
-    let len = c.len().max(r.len());
+    let (c_nums, c_pre) = split(current);
+    let (r_nums, r_pre) = split(remote);
+    let len = c_nums.len().max(r_nums.len());
 
-    (0..len)
+    let core_ordering = (0..len)
         .map(|i| {
-            let cv = c.get(i).copied().unwrap_or(0);
-            let rv = r.get(i).copied().unwrap_or(0);
+            let cv = c_nums.get(i).copied().unwrap_or(0);
+            let rv = r_nums.get(i).copied().unwrap_or(0);
             cv.cmp(&rv)
         })
         .find(|o| *o != Ordering::Equal)
-        .unwrap_or(Ordering::Equal)
+        .unwrap_or(Ordering::Equal);
+
+    if core_ordering != Ordering::Equal {
+        return core_ordering;
+    }
+
+    // Same numeric core: a version WITH a pre-release is LESS than one without.
+    match (c_pre, r_pre) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => compare_prerelease(a, b),
+    }
+}
+
+/// Compare two `SemVer` pre-release strings (dot-separated identifiers).
+///
+/// Per `SemVer` §11.4: numeric identifiers compare numerically; alphanumeric
+/// identifiers compare lexically in ASCII; numeric < alphanumeric; a shorter
+/// list of identifiers is less than a longer one when all prior identifiers
+/// are equal.
+fn compare_prerelease(a: &str, b: &str) -> Ordering {
+    let mut ai = a.split('.');
+    let mut bi = b.split('.');
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(xn), Ok(yn)) => xn.cmp(&yn),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +651,39 @@ mod tests {
     fn compare_major_version_jump() {
         assert_eq!(compare_versions("0.9.9", "1.0.0"), Ordering::Less);
         assert_eq!(compare_versions("2.0.0", "1.99.99"), Ordering::Greater);
+    }
+
+    #[test]
+    fn prerelease_is_less_than_release() {
+        assert_eq!(compare_versions("1.0.0-rc1", "1.0.0"), Ordering::Less);
+        assert_eq!(compare_versions("1.0.0", "1.0.0-rc1"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.0.0-alpha", "1.0.0-beta"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("1.0.0-rc.2", "1.0.0-rc.10"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("1.0.0-alpha", "1.0.0-alpha.1"),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn build_metadata_ignored() {
+        assert_eq!(compare_versions("1.0.0+abc", "1.0.0+xyz"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("1.0.0-rc1+abc", "1.0.0-rc1+xyz"),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn core_takes_precedence_over_prerelease() {
+        assert_eq!(compare_versions("1.0.0-rc1", "0.9.9"), Ordering::Greater);
+        assert_eq!(compare_versions("0.9.9", "1.0.0-rc1"), Ordering::Less);
     }
 
     #[test]
