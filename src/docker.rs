@@ -699,22 +699,24 @@ fn send_http_request(stream: &mut (impl Read + std::io::Write)) -> Option<String
 
 /// Read HTTP response headers from a buffered reader using `httparse`.
 ///
-/// Reads line-by-line until the header/body boundary (empty `\r\n` line),
+/// Reads raw bytes until the header/body boundary (empty `\r\n` line),
 /// then delegates to `httparse::Response::parse` for robust parsing.
 /// The reader is left positioned at the start of the response body.
 fn read_response_headers(reader: &mut impl BufRead) -> Option<ParsedHeaders> {
-    let mut raw = Vec::new();
+    // Pre-allocate for a typical Docker daemon header payload.
+    let mut raw = Vec::with_capacity(1024);
 
     // Accumulate the status line and all header lines including the
-    // final empty CRLF. The BufReader remains positioned at the body.
+    // final empty CRLF. Using `read_until` instead of `read_line`
+    // avoids a per-line String allocation and UTF-8 validation pass
+    // since httparse operates on raw bytes anyway.
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
+        let start = raw.len();
+        if reader.read_until(b'\n', &mut raw).ok()? == 0 {
             return None;
         }
-        let is_boundary = line == "\r\n" || line == "\n";
-        raw.extend_from_slice(line.as_bytes());
-        if is_boundary {
+        let line = &raw[start..];
+        if line == b"\r\n" || line == b"\n" {
             break;
         }
     }
