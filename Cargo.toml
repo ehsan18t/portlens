@@ -34,8 +34,8 @@ clap = { version = "4", default-features = false, features = ["std", "derive", "
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
