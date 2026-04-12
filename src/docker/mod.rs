@@ -103,13 +103,20 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
 
 // ── Platform-specific daemon queries ─────────────────────────────────
 
+/// If `DOCKER_HOST` is set to a `tcp://` URL, query it and return the map.
+///
+/// Shared across Unix and Windows since the TCP transport is platform-agnostic.
+fn query_docker_host_tcp() -> Option<ContainerPortMap> {
+    let addr = ipc::docker_host_tcp_addr()?;
+    ipc::fetch_tcp_json(&addr).map(|body| api::parse_containers_json(&body))
+}
+
 #[cfg(unix)]
 fn query_daemon() -> Option<ContainerPortMap> {
     use std::path::Path;
 
-    // Honour DOCKER_HOST when it specifies a TCP address.
-    if let Some(addr) = ipc::docker_host_tcp_addr() {
-        return ipc::fetch_tcp_json(&addr).map(|body| api::parse_containers_json(&body));
+    if let Some(map) = query_docker_host_tcp() {
+        return Some(map);
     }
 
     // Honour DOCKER_HOST when it points at a Unix socket (unix://).
@@ -129,13 +136,18 @@ fn query_daemon() -> Option<ContainerPortMap> {
 }
 
 #[cfg(windows)]
-fn query_daemon() -> Option<ContainerPortMap> {
-    let deadline = std::time::Instant::now() + ipc::DAEMON_TIMEOUT;
+const DEFAULT_PIPE_PATHS: &[&str] = &[
+    r"\\.\pipe\docker_engine",
+    r"\\.\pipe\podman-machine-default",
+];
 
-    // Honour DOCKER_HOST when it specifies a TCP address.
-    if let Some(addr) = ipc::docker_host_tcp_addr() {
-        return ipc::fetch_tcp_json(&addr).map(|body| api::parse_containers_json(&body));
+#[cfg(windows)]
+fn query_daemon() -> Option<ContainerPortMap> {
+    if let Some(map) = query_docker_host_tcp() {
+        return Some(map);
     }
+
+    let deadline = std::time::Instant::now() + ipc::DAEMON_TIMEOUT;
 
     // Honour DOCKER_HOST when it points at a named pipe (npipe://).
     if let Some(path) = ipc::docker_host_npipe_path()
@@ -144,18 +156,10 @@ fn query_daemon() -> Option<ContainerPortMap> {
         return Some(api::parse_containers_json(&body));
     }
 
-    let pipe_paths = [
-        r"\\.\pipe\docker_engine",
-        r"\\.\pipe\podman-machine-default",
-    ];
-
-    for path in pipe_paths {
-        if let Some(body) = ipc::fetch_named_pipe_json(path, deadline) {
-            return Some(api::parse_containers_json(&body));
-        }
-    }
-
-    None
+    DEFAULT_PIPE_PATHS
+        .iter()
+        .find_map(|path| ipc::fetch_named_pipe_json(path, deadline))
+        .map(|body| api::parse_containers_json(&body))
 }
 
 #[cfg(unix)]
