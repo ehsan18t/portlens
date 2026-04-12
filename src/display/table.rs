@@ -9,11 +9,12 @@ use anyhow::{Context, Result};
 
 use crate::types::PortEntry;
 
-use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
-use super::{
-    Alignment, BorderStyle, DisplayOptions, ascii_border_style, display_width, format_cell,
-    pad_value, render_border_line, render_bordered_cells, rendered_table_width, utf8_border_style,
+use super::DisplayOptions;
+use super::render::{
+    Alignment, BorderStyle, ascii_border_style, display_width, format_cell, pad_value,
+    render_border_line, render_bordered_cells, rendered_table_width, utf8_border_style,
 };
+use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
 
 /// Maximum display width for the process name column before truncation.
 const MAX_PROCESS_NAME_LEN: usize = 20;

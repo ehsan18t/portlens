@@ -8,11 +8,11 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 
-use super::terminal::{stderr_terminal_width, terminal_supports_utf8_borders};
-use super::{
+use super::render::{
     Alignment, BorderStyle, ascii_border_style, display_width, format_cell, render_border_line,
     render_bordered_cells, rendered_table_width, truncate_to_width, utf8_border_style,
 };
+use super::terminal::{stderr_terminal_width, terminal_supports_utf8_borders};
 
 const QUICK_ACTIONS: &[ActionItem] = &[
     ActionItem {
