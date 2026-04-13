@@ -107,6 +107,9 @@ Download the latest release from the [Releases](https://github.com/ehsan18t/port
 | Linux x86-64 (.rpm) | `portlens-<version>-x86_64.rpm`    |
 | Windows x86-64      | `portlens-<version>-x86_64.exe`    |
 
+Release tags may include a leading `v`, but published asset filenames omit it.
+For example, release tag `v0.2.0` uploads `portlens-0.2.0-x86_64.exe`.
+
 For Debian/Ubuntu: `sudo dpkg -i portlens-<version>-amd64.deb`
 For Fedora/RHEL: `sudo rpm -i portlens-<version>-x86_64.rpm`
 
