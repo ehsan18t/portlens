@@ -1,4 +1,4 @@
-//! Benchmarks for portview.
+//! Benchmarks for `PortLens`.
 //!
 //! Uses criterion for statistical benchmarking. Setup code (cloning
 //! input data) is isolated from measurement via `iter_batched` so
@@ -8,9 +8,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use portview::docker;
-use portview::filter::{self, FilterOptions};
-use portview::types::{PortEntry, Protocol, State};
+use portlens::docker;
+use portlens::filter::{self, FilterOptions};
+use portlens::types::{PortEntry, Protocol, State};
 
 /// Build a synthetic dataset of `n` port entries with mixed metadata.
 fn synthetic_entries(n: u16) -> Vec<PortEntry> {

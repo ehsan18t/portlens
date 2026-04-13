@@ -1,5 +1,5 @@
 #!/bin/sh
-# portview — Pre-push hook
+# PortLens - Pre-push hook
 # Runs the full quality gate before pushing to remote.
 # This mirrors the CI checks so issues are caught locally before a PR.
 #
@@ -47,7 +47,7 @@ ensure_cargo() {
 ensure_cargo
 
 echo "╔══════════════════════════════════════════╗"
-echo "║     portview Pre-Push Quality Gate        ║"
+echo "║     PortLens Pre-Push Quality Gate        ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 

@@ -1,6 +1,6 @@
 //! # Self-update module
 //!
-//! Checks GitHub Releases for a newer version of portview and, on supported
+//! Checks GitHub Releases for a newer version of `PortLens` and, on supported
 //! platforms, downloads and replaces the running binary in-place.
 //!
 //! Auto-update is supported on:
@@ -28,7 +28,7 @@ use anyhow::{Context, Error, Result, bail};
 /// GitHub repository owner.
 const REPO_OWNER: &str = "ehsan18t";
 /// GitHub repository name.
-const REPO_NAME: &str = "portview";
+const REPO_NAME: &str = "portlens";
 
 /// Run the update command.
 ///
@@ -67,7 +67,7 @@ fn is_update_available(current: &str, remote: &str) -> bool {
 
 fn print_up_to_date(current: &str) {
     eprintln!("up to date.");
-    eprintln!("portview is already up to date ({current}).");
+    eprintln!("PortLens is already up to date ({current}).");
 }
 
 fn print_available_update(current: &str, remote: &str) {
@@ -114,7 +114,7 @@ fn install_release_asset(
     install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
     apply_asset_update(release, remote, ext, install)?;
-    eprintln!("Updated portview: {current} -> {remote}");
+    eprintln!("Updated PortLens: {current} -> {remote}");
     Ok(())
 }
 
@@ -131,7 +131,7 @@ fn apply_asset_update(
     ext: &str,
     install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
-    let asset_name = format!("portview-{remote}-x86_64.{ext}");
+    let asset_name = format!("portlens-{remote}-x86_64.{ext}");
     let asset = find_asset(release, &asset_name)?;
     let binary_path = current_exe_path()?;
     install(asset, &binary_path)
@@ -262,7 +262,7 @@ fn base_curl_command(timeout_seconds: &str) -> ProcessCommand {
         .arg("--max-time")
         .arg(timeout_seconds)
         .arg("--header")
-        .arg(format!("User-Agent: portview/{version}"));
+        .arg(format!("User-Agent: PortLens/{version}"));
     command
 }
 
@@ -462,7 +462,7 @@ fn find_asset<'a>(release: &'a Release, expected_name: &str) -> Result<&'a Asset
 /// is used only to locate the file we need to overwrite as part of the
 /// self-update flow — it is never used as input to a security decision
 /// (no authentication, authorization, trust check, or code/config load
-/// keys off this value). The user explicitly invoked `portview update`,
+/// keys off this value). The user explicitly invoked `portlens update`,
 /// so replacing their own binary in place is the intended behavior.
 fn current_exe_path() -> Result<PathBuf> {
     std::env::current_exe()
@@ -476,7 +476,7 @@ fn temp_path_beside(binary_path: &Path, suffix: &str) -> Result<PathBuf> {
     let dir = binary_path
         .parent()
         .context("cannot determine parent directory of current binary")?;
-    let file_name = format!(".portview-update-{}{suffix}", std::process::id());
+    let file_name = format!(".portlens-update-{}{suffix}", std::process::id());
     Ok(dir.join(file_name))
 }
 
@@ -543,7 +543,7 @@ fn download_and_replace_linux_tar(asset: &Asset, binary_path: &Path) -> Result<(
     let extract_dir = temp_path_beside(binary_path, ".extract")?;
 
     download_archive(asset, &temp_archive)?;
-    let temp_binary = extract_portview_binary(&temp_archive, &extract_dir)?;
+    let temp_binary = extract_portlens_binary(&temp_archive, &extract_dir)?;
 
     // Set executable permission
     let permissions = std::fs::Permissions::from_mode(0o755);
@@ -565,13 +565,13 @@ fn download_archive(asset: &Asset, archive_path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn extract_portview_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
+fn extract_portlens_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
     recreate_directory(extract_dir)?;
 
     let extraction_result = extract_archive_with_tar(archive_path, extract_dir).and_then(|()| {
-        find_portview_in_dir(extract_dir).with_context(|| {
+        find_portlens_in_dir(extract_dir).with_context(|| {
             format!(
-                "Archive does not contain a 'portview' binary: {}",
+                "Archive does not contain a 'portlens' binary: {}",
                 extract_dir.display()
             )
         })
@@ -628,9 +628,9 @@ fn replace_linux_binary(temp_binary: &Path, binary_path: &Path) -> Result<()> {
     })
 }
 
-/// Recursively search `dir` for a file named `portview` and return its path.
+/// Recursively search `dir` for a file named `portlens` and return its path.
 #[cfg(unix)]
-fn find_portview_in_dir(dir: &Path) -> Result<PathBuf> {
+fn find_portlens_in_dir(dir: &Path) -> Result<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
         let entries = std::fs::read_dir(&current)
@@ -644,13 +644,13 @@ fn find_portview_in_dir(dir: &Path) -> Result<PathBuf> {
             if file_type.is_dir() {
                 stack.push(path);
             } else if file_type.is_file()
-                && path.file_name().and_then(|n| n.to_str()) == Some("portview")
+                && path.file_name().and_then(|n| n.to_str()) == Some("portlens")
             {
                 return Ok(path);
             }
         }
     }
-    bail!("no 'portview' binary found under {}", dir.display())
+    bail!("no 'portlens' binary found under {}", dir.display())
 }
 
 /// Verify a downloaded file matches the expected asset size when available.
@@ -817,16 +817,16 @@ mod tests {
     fn parse_valid_release_json() {
         let json = r#"{
             "tag_name": "0.2.0",
-            "html_url": "https://github.com/ehsan18t/portview/releases/tag/0.2.0",
+            "html_url": "https://github.com/ehsan18t/portlens/releases/tag/0.2.0",
             "assets": [
                 {
-                    "name": "portview-0.2.0-x86_64.exe",
-                    "browser_download_url": "https://github.com/ehsan18t/portview/releases/download/0.2.0/portview-0.2.0-x86_64.exe",
+                    "name": "portlens-0.2.0-x86_64.exe",
+                    "browser_download_url": "https://github.com/ehsan18t/portlens/releases/download/0.2.0/portlens-0.2.0-x86_64.exe",
                     "size": 2048000
                 },
                 {
-                    "name": "portview-0.2.0-x86_64.tar.gz",
-                    "browser_download_url": "https://github.com/ehsan18t/portview/releases/download/0.2.0/portview-0.2.0-x86_64.tar.gz",
+                    "name": "portlens-0.2.0-x86_64.tar.gz",
+                    "browser_download_url": "https://github.com/ehsan18t/portlens/releases/download/0.2.0/portlens-0.2.0-x86_64.tar.gz",
                     "size": 1024000
                 }
             ]
@@ -835,8 +835,8 @@ mod tests {
         let release = parse_release_json(json).unwrap();
         assert_eq!(release.tag_name, "0.2.0");
         assert_eq!(release.assets.len(), 2);
-        assert_eq!(release.assets[0].name, "portview-0.2.0-x86_64.exe");
-        assert_eq!(release.assets[1].name, "portview-0.2.0-x86_64.tar.gz");
+        assert_eq!(release.assets[0].name, "portlens-0.2.0-x86_64.exe");
+        assert_eq!(release.assets[1].name, "portlens-0.2.0-x86_64.tar.gz");
         assert_eq!(release.assets[0].size_bytes, Some(2_048_000));
         assert_eq!(release.assets[1].size_bytes, Some(1_024_000));
     }
@@ -868,19 +868,19 @@ mod tests {
             html_url: "https://example.com".to_owned(),
             assets: vec![
                 Asset {
-                    name: "portview-0.2.0-x86_64.exe".to_owned(),
+                    name: "portlens-0.2.0-x86_64.exe".to_owned(),
                     browser_download_url: "https://example.com/exe".to_owned(),
                     size_bytes: Some(1234),
                 },
                 Asset {
-                    name: "portview-0.2.0-x86_64.tar.gz".to_owned(),
+                    name: "portlens-0.2.0-x86_64.tar.gz".to_owned(),
                     browser_download_url: "https://example.com/tar".to_owned(),
                     size_bytes: Some(5678),
                 },
             ],
         };
 
-        let asset = find_asset(&release, "portview-0.2.0-x86_64.exe").unwrap();
+        let asset = find_asset(&release, "portlens-0.2.0-x86_64.exe").unwrap();
         assert_eq!(asset.browser_download_url, "https://example.com/exe");
         assert_eq!(asset.size_bytes, Some(1234));
     }
@@ -893,13 +893,13 @@ mod tests {
             assets: vec![],
         };
 
-        assert!(find_asset(&release, "portview-0.2.0-x86_64.exe").is_err());
+        assert!(find_asset(&release, "portlens-0.2.0-x86_64.exe").is_err());
     }
 
     #[test]
     fn verify_download_size_accepts_exact_asset_size() {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("portview.exe");
+        let file_path = dir.path().join("portlens.exe");
         fs::write(&file_path, [0_u8; 8]).unwrap();
 
         verify_download_size(&file_path, Some(8), 1024, "binary")
@@ -909,7 +909,7 @@ mod tests {
     #[test]
     fn verify_download_size_rejects_mismatched_asset_size() {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("portview.exe");
+        let file_path = dir.path().join("portlens.exe");
         fs::write(&file_path, [0_u8; 8]).unwrap();
 
         let error = verify_download_size(&file_path, Some(9), 1024, "binary")
@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn verify_download_size_falls_back_to_minimum_size_without_metadata() {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("portview.exe");
+        let file_path = dir.path().join("portlens.exe");
         fs::write(&file_path, [0_u8; 16]).unwrap();
 
         let error = verify_download_size(&file_path, None, 1024, "binary")

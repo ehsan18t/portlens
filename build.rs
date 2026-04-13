@@ -1,7 +1,9 @@
-//! Build-time Windows resource embedding for the `portview` executable.
+//! Build-time Windows resource embedding for the `portlens` executable.
 
 use std::env;
 use std::path::Path;
+
+const PRODUCT_NAME: &str = "PortLens";
 
 fn main() {
     println!("cargo::rerun-if-changed=assets");
@@ -36,9 +38,8 @@ fn target_os() -> Result<String, env::VarError> {
 
 fn version_strings() -> [(&'static str, String); 5] {
     let version = cargo_package("CARGO_PKG_VERSION");
-    let product_name = cargo_package("CARGO_PKG_NAME");
     let internal_name = cargo_package("CARGO_PKG_NAME");
-    let executable_name = format!("{product_name}.exe");
+    let executable_name = format!("{internal_name}.exe");
     let description = cargo_package("CARGO_PKG_DESCRIPTION");
 
     [
@@ -46,7 +47,7 @@ fn version_strings() -> [(&'static str, String); 5] {
         ("FileVersion", version),
         ("InternalName", internal_name),
         ("OriginalFilename", executable_name),
-        ("ProductName", product_name),
+        ("ProductName", PRODUCT_NAME.to_owned()),
     ]
 }
 

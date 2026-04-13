@@ -1,6 +1,6 @@
-//! # portview
+//! # `PortLens`
 //!
-//! A cross-platform CLI tool that lists open network ports and their associated
+//! `PortLens` is a cross-platform CLI tool that lists open network ports and their associated
 //! processes. Provides a fast, readable alternative to `netstat` and `ss`.
 //!
 //! This crate is CLI-first. The public modules below exist to support the

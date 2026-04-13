@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug or unexpected behaviour in portview
+description: Report a bug or unexpected behaviour in PortLens
 labels: ["bug"]
 body:
   - type: markdown
@@ -13,7 +13,7 @@ body:
     attributes:
       label: What happened?
       description: A clear description of the bug or unexpected behaviour.
-      placeholder: When I run `portview -p 8080`, the output shows...
+      placeholder: When I run `portlens -p 8080`, the output shows...
     validations:
       required: true
 
@@ -23,7 +23,7 @@ body:
       label: Steps to reproduce
       description: Exact commands and steps to trigger the bug.
       placeholder: |
-        1. Run `portview -a`
+        1. Run `portlens -a`
         2. Observe the output
         3. ...
     validations:
@@ -42,16 +42,16 @@ body:
     attributes:
       label: Terminal output
       description: >
-        Paste the terminal output showing the issue. Use `portview --full` for
+        Paste the terminal output showing the issue. Use `portlens --full` for
         extra detail.
       render: text
 
   - type: input
     id: version
     attributes:
-      label: portview version
-      description: Output of `portview --version`.
-      placeholder: portview 0.1.0
+      label: PortLens version
+      description: Output of `portlens --version`.
+      placeholder: PortLens 0.1.0
     validations:
       required: true
 

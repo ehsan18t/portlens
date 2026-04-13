@@ -1,4 +1,4 @@
-# portview - Release Pipeline
+# PortLens - Release Pipeline
 # Manually triggered workflow that builds release binaries for supported platforms,
 # packages them as .tar.gz / .exe / .deb / .rpm, and creates a draft release.
 #
@@ -56,17 +56,17 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/portview staging/
+          cp target/${{ matrix.target }}/release/portlens staging/
           cp README.md LICENSE staging/
           cd staging
-          tar czf ../portview-${{ inputs.tag }}-${{ matrix.asset_suffix }}.tar.gz *
+          tar czf ../portlens-${{ inputs.tag }}-${{ matrix.asset_suffix }}.tar.gz *
 
       # Upload the raw executable (Windows)
       - name: Package exe
         if: matrix.archive == 'exe'
         shell: pwsh
         run: |
-          Copy-Item target/${{ matrix.target }}/release/portview.exe portview-${{ inputs.tag }}-${{ matrix.asset_suffix }}.exe
+          Copy-Item target/${{ matrix.target }}/release/portlens.exe portlens-${{ inputs.tag }}-${{ matrix.asset_suffix }}.exe
 
       # Build .deb package (Linux x86_64 only)
       - name: Build .deb package
@@ -74,7 +74,7 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/debian/*.deb ./portview-${{ inputs.tag }}-amd64.deb
+          cp target/${{ matrix.target }}/debian/*.deb ./portlens-${{ inputs.tag }}-amd64.deb
 
       # Build .rpm package (Linux x86_64 only)
       - name: Build .rpm package
@@ -82,14 +82,14 @@ jobs:
         run: |
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/generate-rpm/*.rpm ./portview-${{ inputs.tag }}-x86_64.rpm
+          cp target/${{ matrix.target }}/generate-rpm/*.rpm ./portlens-${{ inputs.tag }}-x86_64.rpm
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: release-${{ matrix.target }}
           path: |
-            portview-${{ inputs.tag }}-*
+            portlens-${{ inputs.tag }}-*
           if-no-files-found: error
 
   release:
@@ -114,7 +114,7 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: ${{ inputs.tag }}
-          name: portview ${{ inputs.tag }}
+          name: PortLens ${{ inputs.tag }}
           draft: true
           generate_release_notes: true
           files: dist/*

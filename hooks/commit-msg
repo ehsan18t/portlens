@@ -1,5 +1,5 @@
 #!/bin/sh
-# portview — Commit message validation hook
+# PortLens - Commit message validation hook
 # Enforces Conventional Commits format: https://www.conventionalcommits.org
 #
 # Format: <type>(<optional-scope>): <description>

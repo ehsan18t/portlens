@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# portview - Cross-target Clippy gate
+# PortLens - Cross-target Clippy gate
 # Validates the supported Linux and Windows target triples so cfg-specific
 # lint failures are caught locally before CI.
 

@@ -58,7 +58,7 @@ pub(super) fn write_tips(writer: &mut impl Write) -> Result<()> {
 
 fn write_tips_with_width(writer: &mut impl Write, terminal_width: Option<usize>) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
-    let title = format!("Quick Actions  portview v{version}");
+    let title = format!("Quick Actions  PortLens v{version}");
     let style = if terminal_supports_utf8_borders() {
         utf8_border_style()
     } else {
@@ -280,7 +280,7 @@ mod tests {
             "tips should include the quick actions title"
         );
         assert!(
-            output.contains("portview v"),
+            output.contains("PortLens v"),
             "tips should include the version title"
         );
         assert!(

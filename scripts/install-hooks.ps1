@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# portview — Install git hooks
+# PortLens - Install git hooks
 # Run once after cloning: .\scripts\install-hooks.ps1
 
 $ErrorActionPreference = "Stop"

@@ -1,4 +1,4 @@
-# portview — clippy configuration
+# PortLens - clippy configuration
 # Additional clippy tuning beyond Cargo.toml [lints.clippy]
 
 # Functions longer than this trigger too_many_lines

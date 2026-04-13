@@ -1,4 +1,4 @@
-# Copilot & AI Agent Instructions — portview
+# Copilot & AI Agent Instructions - PortLens
 
 > This document defines how AI coding agents (GitHub Copilot, Cursor, Windsurf,
 > Claude, etc.) must interact with this codebase. Treat every rule here as a
@@ -15,7 +15,7 @@
 | Binary     | Single CLI executable                         |
 | License    | MIT                                           |
 | Min Rust   | latest stable (currently 1.93+)               |
-| Repository | `https://github.com/ehsan18t/portview`        |
+| Repository | `https://github.com/ehsan18t/portlens`        |
 
 ---
 
@@ -71,16 +71,16 @@ src/
 
 ## 4 · Core Dependencies
 
-| Crate       | Purpose                                                    |
-| ----------- | ---------------------------------------------------------- |
-| listeners   | Cross-platform socket enumeration with process association |
-| sysinfo     | Process metadata lookup (name, user) by PID                |
-| pico-args   | Minimal CLI argument parsing (zero dependencies)           |
-| anyhow      | Error handling with context                                |
-| serde/json  | JSON serialization for `--json` output                     |
-| httparse    | HTTP/1.x response header and chunk-size parsing            |
-| log         | Logging facade for debug diagnostics                       |
-| env_logger  | stderr logger controlled by `RUST_LOG`                     |
+| Crate      | Purpose                                                    |
+| ---------- | ---------------------------------------------------------- |
+| listeners  | Cross-platform socket enumeration with process association |
+| sysinfo    | Process metadata lookup (name, user) by PID                |
+| pico-args  | Minimal CLI argument parsing (zero dependencies)           |
+| anyhow     | Error handling with context                                |
+| serde/json | JSON serialization for `--json` output                     |
+| httparse   | HTTP/1.x response header and chunk-size parsing            |
+| log        | Logging facade for debug diagnostics                       |
+| env_logger | stderr logger controlled by `RUST_LOG`                     |
 
 ---
 
@@ -162,13 +162,13 @@ docs: update README with installation instructions
 
 **When you change behaviour, you MUST update documentation in the same commit.**
 
-| What changed             | Update these                        |
-| ------------------------ | ----------------------------------- |
+| What changed             | Update these                          |
+| ------------------------ | ------------------------------------- |
 | New CLI flag             | `print_help()`, `parse_cli()`, README |
-| Output format change     | README, docs/CONTRIBUTING.md |
-| Build / CI change        | docs/CONTRIBUTING.md, README |
-| New module               | This file, README            |
-| Dependency added/removed | Cargo.toml, deny.toml        |
+| Output format change     | README, docs/CONTRIBUTING.md          |
+| Build / CI change        | docs/CONTRIBUTING.md, README          |
+| New module               | This file, README                     |
+| Dependency added/removed | Cargo.toml, deny.toml                 |
 
 ---
 

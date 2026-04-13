@@ -1,4 +1,4 @@
-# Contributing to portview
+# Contributing to PortLens
 
 Thank you for your interest in contributing!
 
@@ -19,8 +19,8 @@ rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc
 ### Clone and Build
 
 ```bash
-git clone https://github.com/ehsan18t/portview.git
-cd portview
+git clone https://github.com/ehsan18t/portlens.git
+cd portlens
 cargo build
 ```
 

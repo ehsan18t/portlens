@@ -1,22 +1,22 @@
 # Update Command Design Spec
 
 **Date:** 2026-04-11
-**Feature:** `portview update` — self-update from GitHub releases
+**Feature:** `portlens update` - self-update from GitHub releases
 
 ## Overview
 
-Add a `portview update` subcommand that checks GitHub for newer releases and,
+Add a `portlens update` subcommand that checks GitHub for newer releases and,
 on supported platforms, downloads and replaces the running binary in-place.
 
 ## CLI Interface
 
 ```
-portview update            # Check + auto-update (if platform supports it)
-portview update --check    # Check only, never download or replace
+portlens update            # Check + auto-update (if platform supports it)
+portlens update --check    # Check only, never download or replace
 ```
 
-All arguments (existing and new) are **case-insensitive**: `portview UPDATE`,
-`portview Update --CHECK`, `portview --TCP -P 3000` all work.
+All arguments (existing and new) are **case-insensitive**: `portlens UPDATE`,
+`portlens Update --CHECK`, `portlens --TCP -P 3000` all work.
 
 ## Version Comparison
 
@@ -27,20 +27,20 @@ All arguments (existing and new) are **case-insensitive**: `portview UPDATE`,
 
 ## GitHub API
 
-- Endpoint: `GET https://api.github.com/repos/ehsan18t/portview/releases/latest`
+- Endpoint: `GET https://api.github.com/repos/ehsan18t/portlens/releases/latest`
 - Header: `Accept: application/vnd.github+json`
-- Header: `User-Agent: portview/{version}`
+- Header: `User-Agent: PortLens/{version}`
 - Parse JSON response for `tag_name` and `assets[].name` / `assets[].browser_download_url`
 
 ## Asset Selection
 
 | Platform       | Asset pattern                        | Auto-update? |
 | -------------- | ------------------------------------ | ------------ |
-| Windows x86_64 | `portview-{tag}-x86_64.exe`          | Yes          |
-| Linux x86_64   | `portview-{tag}-x86_64.tar.gz`       | Yes*         |
-| Linux deb      | detected via `dpkg -S <binary_path>` | No — warn    |
-| Linux rpm      | detected via `rpm -qf <binary_path>` | No — warn    |
-| Other OS/arch  | —                                    | No — warn    |
+| Windows x86_64 | `portlens-{tag}-x86_64.exe`          | Yes          |
+| Linux x86_64   | `portlens-{tag}-x86_64.tar.gz`       | Yes*         |
+| Linux deb      | detected via `dpkg -S <binary_path>` | No - warn    |
+| Linux rpm      | detected via `rpm -qf <binary_path>` | No - warn    |
+| Other OS/arch  | -                                    | No - warn    |
 
 *Linux tar.gz auto-update only when the binary is NOT managed by dpkg or rpm.
 
@@ -60,9 +60,9 @@ All arguments (existing and new) are **case-insensitive**: `portview UPDATE`,
 5. Download asset to a temp file in the same directory as the binary
    (same filesystem guarantees atomic rename)
 6. Verify the downloaded size matches the GitHub release asset size metadata
-7. **Windows:** rename current binary to `portview.old.exe`, rename temp to
-   `portview.exe`, delete `portview.old.exe` (best-effort)
-8. **Linux tar.gz:** extract the `portview` binary from the archive into temp,
+7. **Windows:** rename current binary to `portlens.old.exe`, rename temp to
+  `portlens.exe`, delete `portlens.old.exe` (best-effort)
+8. **Linux tar.gz:** extract the `portlens` binary from the archive into temp,
    set executable permission (0o755), rename over current binary
 9. Print success message with old → new version
 
@@ -95,7 +95,7 @@ When auto-update is not supported (deb, rpm, unsupported OS), the command:
 | Asset size mismatch             | "Download appears corrupt. Aborting update."                                             |
 | Temp file write failure         | "Failed to write temporary file: {err}"                                                  |
 | Rename failure                  | "Failed to replace binary: {err}"                                                        |
-| Already up to date              | "portview is already up to date ({version})."                                            |
+| Already up to date              | "PortLens is already up to date ({version})."                                            |
 | Tar extraction failure (Linux)  | "Failed to extract update archive: {err}"                                                |
 
 ## Case-Insensitive Arguments
@@ -104,7 +104,7 @@ Preprocessing in `main()` before clap parsing:
 - Collect `std::env::args_os()`
 - Skip argv[0], lowercase all remaining args (`.to_ascii_lowercase()` on the
   Unicode string)
-- This is safe because portview has no string-valued arguments (only numeric
+- This is safe because PortLens has no string-valued arguments (only numeric
   port values, which are unaffected by lowercasing)
 - Clap then sees normalized lowercase args matching its defined flags/subcommands
 
