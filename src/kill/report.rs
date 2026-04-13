@@ -41,6 +41,23 @@ impl KillReportEntry {
             hint,
         }
     }
+
+    /// Build a report row describing a dry-run target.
+    #[must_use]
+    pub const fn from_dry_run(pid: u32, process: String, force: bool) -> Self {
+        let status = if force {
+            "would-force-kill"
+        } else {
+            "would-kill"
+        };
+
+        Self {
+            pid,
+            process,
+            status,
+            hint: None,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -79,4 +96,29 @@ pub fn print_json(entries: &[KillReportEntry]) -> Result<()> {
     serde_json::to_writer_pretty(&mut out, entries).context("failed to serialize kill report")?;
     writeln!(out).context("failed to terminate JSON output")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_report_uses_machine_readable_status() {
+        let entry = KillReportEntry::from_dry_run(1234, "node".to_string(), false);
+
+        assert_eq!(entry.pid, 1234);
+        assert_eq!(entry.process, "node");
+        assert_eq!(entry.status, "would-kill");
+        assert!(
+            entry.hint.is_none(),
+            "dry-run entries should not add a hint"
+        );
+    }
+
+    #[test]
+    fn forceful_dry_run_report_marks_forceful_status() {
+        let entry = KillReportEntry::from_dry_run(1234, "node".to_string(), true);
+
+        assert_eq!(entry.status, "would-force-kill");
+    }
 }

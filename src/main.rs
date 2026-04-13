@@ -269,7 +269,7 @@ fn print_help() {
     println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
     println!("  -y, --yes            Skip interactive confirmation");
     println!("      --dry-run        List targets without killing anything");
-    println!("      --json           Emit the kill report as JSON");
+    println!("      --json           Emit the kill report or dry-run target list as JSON");
 }
 
 fn print_version() {

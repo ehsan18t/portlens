@@ -128,6 +128,11 @@ fn reject_protected_pids(targets: &[Target]) -> Result<()> {
 }
 
 fn announce_dry_run(targets: &[Target], opts: &KillOptions) -> Result<()> {
+    if opts.json {
+        let report = dry_run_report(targets, opts.force);
+        return report::print_json(&report);
+    }
+
     let mut out = std::io::stdout().lock();
     let kind = if opts.force {
         "SIGKILL/terminate"
@@ -139,6 +144,13 @@ fn announce_dry_run(targets: &[Target], opts: &KillOptions) -> Result<()> {
         writeln!(out, "  pid {} ({})", t.pid, t.process)?;
     }
     Ok(())
+}
+
+fn dry_run_report(targets: &[Target], force: bool) -> Vec<KillReportEntry> {
+    targets
+        .iter()
+        .map(|target| KillReportEntry::from_dry_run(target.pid, target.process.clone(), force))
+        .collect()
 }
 
 fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
@@ -162,4 +174,34 @@ fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
         line.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_report_uses_json_status_tokens() {
+        let targets = vec![Target {
+            pid: 1234,
+            process: "node".to_string(),
+        }];
+
+        let report = dry_run_report(&targets, false);
+
+        assert_eq!(report.len(), 1, "dry-run reports should keep every target");
+        assert_eq!(report[0].status, "would-kill");
+    }
+
+    #[test]
+    fn dry_run_report_marks_forceful_targets() {
+        let targets = vec![Target {
+            pid: 1234,
+            process: "node".to_string(),
+        }];
+
+        let report = dry_run_report(&targets, true);
+
+        assert_eq!(report[0].status, "would-force-kill");
+    }
 }

@@ -150,7 +150,7 @@ cargo install portlens
 | `--no-header`  |       | Suppress the column header row                                          |
 | `--json`       |       | Output results as a JSON array                                          |
 | `--no-enrich`  |       | Disable Docker/Podman, project-root, and config-file enrichment         |
-| `--version`    | `-V`  | Print the version string and exit                                       |
+| `--version`    | `-v`  | Print the version string and exit                                       |
 | `--help`       | `-h`  | Print usage information and exit                                        |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
@@ -165,17 +165,18 @@ portlens kill --pid 12345          # Kill a single PID
 portlens kill --port 3000 --force  # SIGKILL on Unix (Windows is always forceful)
 portlens kill --port 3000 --yes    # Skip the confirmation prompt
 portlens kill --port 3000 --dry-run
+portlens kill --pid 12345 --dry-run --json
 portlens kill --pid 12345 --json
 ```
 
-| Flag           | Short | Description                                                                  |
-| -------------- | ----- | ---------------------------------------------------------------------------- |
-| `--port <num>` | `-p`  | Kill every process listening on this port (dedups IPv4/IPv6 and workers)     |
-| `--pid <num>`  |       | Kill the specified PID                                                       |
-| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows — already forceful)  |
-| `--yes`        | `-y`  | Skip interactive confirmation                                                |
-| `--dry-run`    |       | List resolved targets without signaling anything                             |
-| `--json`       |       | Emit the kill report as JSON                                                 |
+| Flag           | Short | Description                                                                 |
+| -------------- | ----- | --------------------------------------------------------------------------- |
+| `--port <num>` | `-p`  | Kill every process listening on this port (dedups IPv4/IPv6 and workers)    |
+| `--pid <num>`  |       | Kill the specified PID                                                      |
+| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows — already forceful) |
+| `--yes`        | `-y`  | Skip interactive confirmation                                               |
+| `--dry-run`    |       | List resolved targets without signaling anything                            |
+| `--json`       |       | Emit the kill report or dry-run target list as JSON                         |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
 
@@ -265,12 +266,12 @@ For environment-specific debugging, enable tracing with `RUST_LOG=debug` and rer
 
 ## Exit Codes
 
-| Code | Meaning                                                             |
-| ---- | ------------------------------------------------------------------- |
-| 0    | Success                                                             |
+| Code | Meaning                                                                     |
+| ---- | --------------------------------------------------------------------------- |
+| 0    | Success                                                                     |
 | 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed) |
-| 2    | Usage error (invalid flag combination or missing required argument) |
-| 3    | `kill` selector matched no live process                             |
+| 2    | Usage error (invalid flag combination or missing required argument)         |
+| 3    | `kill` selector matched no live process                                     |
 
 ---
 
