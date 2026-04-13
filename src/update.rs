@@ -111,7 +111,7 @@ fn install_release_asset(
     current: &str,
     remote: &str,
     ext: &str,
-    install: fn(&str, &Path) -> Result<()>,
+    install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
     apply_asset_update(release, remote, ext, install)?;
     eprintln!("Updated portview: {current} -> {remote}");
@@ -129,12 +129,12 @@ fn apply_asset_update(
     release: &Release,
     remote: &str,
     ext: &str,
-    install: fn(&str, &Path) -> Result<()>,
+    install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
     let asset_name = format!("portview-{remote}-x86_64.{ext}");
     let asset = find_asset(release, &asset_name)?;
     let binary_path = current_exe_path()?;
-    install(&asset.browser_download_url, &binary_path)
+    install(asset, &binary_path)
 }
 
 fn notify_package_managed(release: &Release, manager: &str) {
@@ -216,6 +216,7 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+    size_bytes: Option<u64>,
 }
 
 /// Execute curl and return stdout as a string.
@@ -333,6 +334,7 @@ fn parse_release_json(body: &str) -> Result<Release> {
                     Some(Asset {
                         name: a["name"].as_str()?.to_owned(),
                         browser_download_url: a["browser_download_url"].as_str()?.to_owned(),
+                        size_bytes: a["size"].as_u64(),
                     })
                 })
                 .collect()
@@ -483,14 +485,14 @@ fn temp_path_beside(binary_path: &Path, suffix: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-fn download_and_replace_windows(url: &str, binary_path: &Path) -> Result<()> {
+fn download_and_replace_windows(asset: &Asset, binary_path: &Path) -> Result<()> {
     eprintln!("Downloading update...");
 
     let temp = temp_path_beside(binary_path, ".exe")?;
     let old = temp_path_beside(binary_path, ".old.exe")?;
 
-    curl_download_file(url, &temp)?;
-    verify_min_size(&temp, 1024, "binary")?;
+    curl_download_file(&asset.browser_download_url, &temp)?;
+    verify_download_size(&temp, asset.size_bytes, 1024, "binary")?;
 
     // Rename current -> old, temp -> current
     // On Windows the running .exe can be renamed but not deleted.
@@ -524,7 +526,7 @@ fn download_and_replace_windows(url: &str, binary_path: &Path) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
+fn download_and_replace_windows(_asset: &Asset, _binary_path: &Path) -> Result<()> {
     bail!("Windows update is not available on this platform")
 }
 
@@ -533,14 +535,14 @@ fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
+fn download_and_replace_linux_tar(asset: &Asset, binary_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     eprintln!("Downloading update...");
 
     let temp_archive = temp_path_beside(binary_path, ".tar.gz")?;
     let extract_dir = temp_path_beside(binary_path, ".extract")?;
 
-    download_archive(url, &temp_archive)?;
+    download_archive(asset, &temp_archive)?;
     let temp_binary = extract_portview_binary(&temp_archive, &extract_dir)?;
 
     // Set executable permission
@@ -557,9 +559,9 @@ fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn download_archive(url: &str, archive_path: &Path) -> Result<()> {
-    curl_download_file(url, archive_path)?;
-    verify_min_size(archive_path, 1024, "archive")
+fn download_archive(asset: &Asset, archive_path: &Path) -> Result<()> {
+    curl_download_file(&asset.browser_download_url, archive_path)?;
+    verify_download_size(archive_path, asset.size_bytes, 1024, "archive")
 }
 
 #[cfg(unix)]
@@ -651,10 +653,30 @@ fn find_portview_in_dir(dir: &Path) -> Result<PathBuf> {
     bail!("no 'portview' binary found under {}", dir.display())
 }
 
-/// Verify a downloaded file meets a minimum size; remove it and bail otherwise.
-fn verify_min_size(path: &Path, min_bytes: u64, kind: &str) -> Result<()> {
+/// Verify a downloaded file matches the expected asset size when available.
+///
+/// Falls back to a minimum-size guard only when the upstream release metadata
+/// omitted the asset size.
+fn verify_download_size(
+    path: &Path,
+    expected_bytes: Option<u64>,
+    min_bytes: u64,
+    kind: &str,
+) -> Result<()> {
     let meta = std::fs::metadata(path)
         .with_context(|| format!("failed to read downloaded file: {}", path.display()))?;
+
+    if let Some(expected_bytes) = expected_bytes.filter(|size| *size > 0) {
+        if meta.len() != expected_bytes {
+            drop(std::fs::remove_file(path));
+            bail!(
+                "Downloaded {kind} size mismatch (expected {expected_bytes} bytes, got {} bytes).",
+                meta.len()
+            );
+        }
+        return Ok(());
+    }
+
     if meta.len() < min_bytes {
         drop(std::fs::remove_file(path));
         bail!(
@@ -666,7 +688,7 @@ fn verify_min_size(path: &Path, min_bytes: u64, kind: &str) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn download_and_replace_linux_tar(_url: &str, _binary_path: &Path) -> Result<()> {
+fn download_and_replace_linux_tar(_asset: &Asset, _binary_path: &Path) -> Result<()> {
     bail!("Linux tar.gz update is not available on this platform")
 }
 
@@ -692,6 +714,10 @@ fn print_manual_download_info(release: &Release) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -811,6 +837,8 @@ mod tests {
         assert_eq!(release.assets.len(), 2);
         assert_eq!(release.assets[0].name, "portview-0.2.0-x86_64.exe");
         assert_eq!(release.assets[1].name, "portview-0.2.0-x86_64.tar.gz");
+        assert_eq!(release.assets[0].size_bytes, Some(2_048_000));
+        assert_eq!(release.assets[1].size_bytes, Some(1_024_000));
     }
 
     #[test]
@@ -842,16 +870,19 @@ mod tests {
                 Asset {
                     name: "portview-0.2.0-x86_64.exe".to_owned(),
                     browser_download_url: "https://example.com/exe".to_owned(),
+                    size_bytes: Some(1234),
                 },
                 Asset {
                     name: "portview-0.2.0-x86_64.tar.gz".to_owned(),
                     browser_download_url: "https://example.com/tar".to_owned(),
+                    size_bytes: Some(5678),
                 },
             ],
         };
 
         let asset = find_asset(&release, "portview-0.2.0-x86_64.exe").unwrap();
         assert_eq!(asset.browser_download_url, "https://example.com/exe");
+        assert_eq!(asset.size_bytes, Some(1234));
     }
 
     #[test]
@@ -863,5 +894,53 @@ mod tests {
         };
 
         assert!(find_asset(&release, "portview-0.2.0-x86_64.exe").is_err());
+    }
+
+    #[test]
+    fn verify_download_size_accepts_exact_asset_size() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 8]).unwrap();
+
+        verify_download_size(&file_path, Some(8), 1024, "binary")
+            .expect("exact asset size should pass verification");
+    }
+
+    #[test]
+    fn verify_download_size_rejects_mismatched_asset_size() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 8]).unwrap();
+
+        let error = verify_download_size(&file_path, Some(9), 1024, "binary")
+            .expect_err("mismatched asset sizes should be rejected");
+
+        assert!(
+            error.to_string().contains("size mismatch"),
+            "verification errors should explain the size mismatch"
+        );
+        assert!(
+            !file_path.exists(),
+            "failed size verification should remove the downloaded file"
+        );
+    }
+
+    #[test]
+    fn verify_download_size_falls_back_to_minimum_size_without_metadata() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 16]).unwrap();
+
+        let error = verify_download_size(&file_path, None, 1024, "binary")
+            .expect_err("missing metadata should still honor the minimum-size guard");
+
+        assert!(
+            error.to_string().contains("too small"),
+            "fallback verification should keep the existing minimum-size message"
+        );
+        assert!(
+            !file_path.exists(),
+            "failed minimum-size verification should remove the downloaded file"
+        );
     }
 }
