@@ -175,9 +175,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             (Some(_), Some(_)) => bail!("'--port' and '--pid' cannot be used together"),
             _ => {}
         }
-        if port == Some(0) {
-            bail!("invalid value for '--port' (expected an integer in 1..=65535)");
-        }
         (
             main,
             Some(Command::Kill {
