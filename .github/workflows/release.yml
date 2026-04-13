@@ -1,6 +1,8 @@
 # PortLens - Release Pipeline
 # Manually triggered workflow that builds release binaries for supported platforms,
 # packages them as .tar.gz / .exe / .deb / .rpm, and creates a draft release.
+# Asset names use the normalized version number without a leading `v` so they
+# stay consistent with README examples and the updater's preferred lookup.
 #
 # Trigger: Actions tab > Release > Run workflow > enter version tag (e.g. v0.1.0)
 

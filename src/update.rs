@@ -137,8 +137,7 @@ fn apply_asset_update(
     ext: &str,
     install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
-    let asset_name = release_asset_name(remote, ext);
-    let asset = find_asset(release, &asset_name)?;
+    let asset = find_release_asset(release, remote, ext)?;
     let binary_path = current_exe_path()?;
     install(asset, &binary_path)
 }
@@ -146,6 +145,17 @@ fn apply_asset_update(
 fn release_asset_name(tag_name: &str, ext: &str) -> String {
     let version = normalized_version_tag(tag_name);
     format!("portlens-{version}-x86_64.{ext}")
+}
+
+fn release_asset_candidates(tag_name: &str, ext: &str) -> Vec<String> {
+    let normalized = release_asset_name(tag_name, ext);
+    let raw = format!("portlens-{tag_name}-x86_64.{ext}");
+
+    if raw == normalized {
+        vec![normalized]
+    } else {
+        vec![normalized, raw]
+    }
 }
 
 fn notify_package_managed(release: &Release, manager: &str) {
@@ -472,16 +482,20 @@ fn compare_prerelease(a: &str, b: &str) -> Ordering {
 // Asset lookup
 // ---------------------------------------------------------------------------
 
-fn find_asset<'a>(release: &'a Release, expected_name: &str) -> Result<&'a Asset> {
+fn find_release_asset<'a>(release: &'a Release, tag_name: &str, ext: &str) -> Result<&'a Asset> {
+    let expected_names = release_asset_candidates(tag_name, ext);
+
     release
         .assets
         .iter()
-        .find(|a| a.name == expected_name)
+        .find(|asset| expected_names.contains(&asset.name))
         .with_context(|| {
             format!(
-                "No compatible binary '{expected_name}' found in release {}.\n\
+                "No compatible binary ({}) found in release {}.\n\
                  Download manually from: {}",
-                release.tag_name, release.html_url
+                expected_names.join(", "),
+                release.tag_name,
+                release.html_url
             )
         })
 }
@@ -877,6 +891,23 @@ mod tests {
     }
 
     #[test]
+    fn release_asset_candidates_accept_normalized_and_tagged_names() {
+        assert_eq!(
+            release_asset_candidates("v0.2.0", "exe"),
+            vec![
+                "portlens-0.2.0-x86_64.exe".to_string(),
+                "portlens-v0.2.0-x86_64.exe".to_string(),
+            ],
+            "updater should support both normalized and legacy v-prefixed asset names"
+        );
+        assert_eq!(
+            release_asset_candidates("0.2.0", "tar.gz"),
+            vec!["portlens-0.2.0-x86_64.tar.gz".to_string()],
+            "non-prefixed tags should only produce one candidate name"
+        );
+    }
+
+    #[test]
     fn core_takes_precedence_over_prerelease() {
         assert_eq!(compare_versions("1.0.0-rc1", "0.9.9"), Ordering::Greater);
         assert_eq!(compare_versions("0.9.9", "1.0.0-rc1"), Ordering::Less);
@@ -931,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn find_asset_matches_exact_name() {
+    fn find_release_asset_matches_exact_name() {
         let release = Release {
             tag_name: "0.2.0".to_owned(),
             html_url: "https://example.com".to_owned(),
@@ -949,20 +980,36 @@ mod tests {
             ],
         };
 
-        let asset = find_asset(&release, "portlens-0.2.0-x86_64.exe").unwrap();
+        let asset = find_release_asset(&release, "0.2.0", "exe").unwrap();
         assert_eq!(asset.browser_download_url, "https://example.com/exe");
         assert_eq!(asset.size_bytes, Some(1234));
     }
 
     #[test]
-    fn find_asset_missing_returns_error() {
+    fn find_release_asset_matches_legacy_tagged_name() {
+        let release = Release {
+            tag_name: "v0.2.0".to_owned(),
+            html_url: "https://example.com".to_owned(),
+            assets: vec![Asset {
+                name: "portlens-v0.2.0-x86_64.exe".to_owned(),
+                browser_download_url: "https://example.com/exe".to_owned(),
+                size_bytes: Some(1234),
+            }],
+        };
+
+        let asset = find_release_asset(&release, "v0.2.0", "exe").unwrap();
+        assert_eq!(asset.browser_download_url, "https://example.com/exe");
+    }
+
+    #[test]
+    fn find_release_asset_missing_returns_error() {
         let release = Release {
             tag_name: "0.2.0".to_owned(),
             html_url: "https://example.com".to_owned(),
             assets: vec![],
         };
 
-        assert!(find_asset(&release, "portlens-0.2.0-x86_64.exe").is_err());
+        assert!(find_release_asset(&release, "0.2.0", "exe").is_err());
     }
 
     #[test]

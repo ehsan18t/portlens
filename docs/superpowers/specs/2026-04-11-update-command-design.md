@@ -47,6 +47,11 @@ All arguments (existing and new) are **case-insensitive**: `portlens UPDATE`,
 
 *Linux tar.gz auto-update only when the binary is NOT managed by dpkg or rpm.
 
+Release assets should use the normalized version number without a leading `v`
+even when the Git tag itself is `v0.2.0`. The updater still accepts legacy
+`portlens-v0.2.0-...` names for compatibility with older or manually-uploaded
+assets.
+
 ## Linux Install Method Detection
 
 1. Resolve binary path via `std::env::current_exe()`
