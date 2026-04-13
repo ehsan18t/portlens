@@ -202,6 +202,7 @@ mod tests {
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "loopback-app".to_string(),
                 image: "node:22".to_string(),
             },
@@ -235,6 +236,7 @@ mod tests {
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 5432, Protocol::Tcp),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "postgres".to_string(),
                 image: "postgres:16".to_string(),
             },
@@ -256,6 +258,7 @@ mod tests {
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 6379, Protocol::Tcp),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "redis".to_string(),
                 image: "redis:7-alpine".to_string(),
             },
@@ -277,6 +280,7 @@ mod tests {
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 3000, Protocol::Tcp),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "web".to_string(),
                 image: "node:22".to_string(),
             },
@@ -298,6 +302,7 @@ mod tests {
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "api-a".to_string(),
                 image: "node:22".to_string(),
             },
@@ -309,6 +314,7 @@ mod tests {
                 Protocol::Tcp,
             ),
             docker::ContainerInfo {
+                id: String::new(),
                 name: "api-b".to_string(),
                 image: "node:22".to_string(),
             },
@@ -331,6 +337,7 @@ mod tests {
     fn container_lookup_keeps_proxy_fallback_when_all_matches_agree() {
         let mut map = HashMap::new();
         let container_info = docker::ContainerInfo {
+            id: String::new(),
             name: "shared-api".to_string(),
             image: "node:22".to_string(),
         };

@@ -503,6 +503,7 @@ mod tests {
     #[test]
     fn image_postgres() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "db".to_string(),
             image: "postgres:16".to_string(),
         };
@@ -512,6 +513,7 @@ mod tests {
     #[test]
     fn image_redis_alpine() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "cache".to_string(),
             image: "redis:7-alpine".to_string(),
         };
@@ -521,6 +523,7 @@ mod tests {
     #[test]
     fn image_valkey() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "cache".to_string(),
             image: "valkey/valkey:8-alpine".to_string(),
         };
@@ -530,6 +533,7 @@ mod tests {
     #[test]
     fn image_unknown() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "custom".to_string(),
             image: "my-custom-app:latest".to_string(),
         };
@@ -539,6 +543,7 @@ mod tests {
     #[test]
     fn image_node_exporter_not_nodejs() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "metrics".to_string(),
             image: "prom/node-exporter:latest".to_string(),
         };
@@ -552,6 +557,7 @@ mod tests {
     #[test]
     fn image_with_registry_prefix() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "app".to_string(),
             image: "ghcr.io/org/nginx:latest".to_string(),
         };
@@ -561,6 +567,7 @@ mod tests {
     #[test]
     fn image_dotnet_microsoft_registry() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "api".to_string(),
             image: "mcr.microsoft.com/dotnet/aspnet:8.0".to_string(),
         };
@@ -570,6 +577,7 @@ mod tests {
     #[test]
     fn image_mongo_express_not_mongodb() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "admin".to_string(),
             image: "mongo-express:latest".to_string(),
         };
@@ -583,6 +591,7 @@ mod tests {
     #[test]
     fn image_mongodb_community_server_matches() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "db".to_string(),
             image: "mongodb/mongodb-community-server:7.0".to_string(),
         };
@@ -592,6 +601,7 @@ mod tests {
     #[test]
     fn image_redis_commander_not_redis() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "ui".to_string(),
             image: "redis-commander:latest".to_string(),
         };
@@ -605,6 +615,7 @@ mod tests {
     #[test]
     fn image_redis_stack_matches() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "cache".to_string(),
             image: "redis/redis-stack:latest".to_string(),
         };
@@ -614,6 +625,7 @@ mod tests {
     #[test]
     fn image_python_linter_not_python() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "lint".to_string(),
             image: "python-linter:latest".to_string(),
         };
@@ -627,6 +639,7 @@ mod tests {
     #[test]
     fn image_rubygems_mirror_not_ruby() {
         let info = ContainerInfo {
+            id: String::new(),
             name: "mirror".to_string(),
             image: "rubygems-mirror:latest".to_string(),
         };
@@ -802,6 +815,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("Cargo.toml"), "").unwrap();
         let info = ContainerInfo {
+            id: String::new(),
             name: "db".to_string(),
             image: "postgres:16".to_string(),
         };

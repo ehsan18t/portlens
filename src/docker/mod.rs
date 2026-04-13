@@ -46,6 +46,8 @@ pub(crate) use podman::{RootlessPodmanResolver, lookup_rootless_podman_container
 /// Metadata about a running container that has published ports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerInfo {
+    /// Full container ID (hex string) for API calls, empty when unavailable.
+    pub id: String,
     /// Container name (e.g. "backend-postgres-1").
     pub name: String,
     /// Container image (e.g. "postgres:16").

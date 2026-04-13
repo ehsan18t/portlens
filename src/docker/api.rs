@@ -52,9 +52,10 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
     };
 
     for container in containers {
+        let id = container.id.unwrap_or("").to_string();
         let name = container_display_name(&container);
         let image = container.image.unwrap_or("").to_string();
-        let info = ContainerInfo { name, image };
+        let info = ContainerInfo { id, name, image };
 
         let Some(ports) = container.ports else {
             continue;
@@ -142,6 +143,7 @@ mod tests {
 
     const SAMPLE_RESPONSE: &str = r#"[
         {
+            "Id": "abc123def456",
             "Names": ["/backend-postgres-1"],
             "Image": "postgres:16",
             "Ports": [
@@ -149,6 +151,7 @@ mod tests {
             ]
         },
         {
+            "Id": "789ghi012jkl",
             "Names": ["/backend-redis-1"],
             "Image": "redis:7-alpine",
             "Ports": [

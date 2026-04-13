@@ -168,7 +168,11 @@ fn podman_storage_container_info(container: &PodmanStorageContainer) -> Containe
         .and_then(|value| value.image_name)
         .unwrap_or_default();
 
-    ContainerInfo { name, image }
+    ContainerInfo {
+        id: container.id.clone(),
+        name,
+        image,
+    }
 }
 
 fn read_podman_network_namespace_path(config_path: &Path) -> Option<PathBuf> {
@@ -292,6 +296,7 @@ mod tests {
         containers.insert(
             netns_path.clone(),
             ContainerInfo {
+                id: "abc123".to_string(),
                 name: "ensurily-redis-dev".to_string(),
                 image: "docker.io/library/redis:7.2-alpine".to_string(),
             },
@@ -309,6 +314,7 @@ mod tests {
         containers.insert(
             first_path.clone(),
             ContainerInfo {
+                id: "aaa111".to_string(),
                 name: "postgres".to_string(),
                 image: "postgres:16".to_string(),
             },
@@ -316,6 +322,7 @@ mod tests {
         containers.insert(
             second_path.clone(),
             ContainerInfo {
+                id: "bbb222".to_string(),
                 name: "redis".to_string(),
                 image: "redis:7-alpine".to_string(),
             },
