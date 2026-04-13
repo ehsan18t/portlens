@@ -93,14 +93,8 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
             .or_else(|| exe_name.and_then(framework::detect_from_process))
     };
 
-    let uptime_secs = sysinfo_process.and_then(|p| {
-        let start = p.start_time();
-        if start > 0 && context.now_epoch > start {
-            Some(context.now_epoch - start)
-        } else {
-            None
-        }
-    });
+    let uptime_secs = sysinfo_process
+        .and_then(|process| process_uptime_secs(context.now_epoch, process.start_time()));
 
     let process = intern_process_name(context.process_names, &l.process.name);
 
@@ -136,6 +130,12 @@ fn resolve_state(
         listeners::Protocol::TCP => tcp_states.get(&socket).copied().unwrap_or(State::Unknown),
         listeners::Protocol::UDP => State::NotApplicable,
     }
+}
+
+fn process_uptime_secs(now_epoch: u64, start_time: u64) -> Option<u64> {
+    (start_time > 0)
+        .then_some(start_time)
+        .and_then(|start_time| now_epoch.checked_sub(start_time))
 }
 
 /// Refresh kind for process metadata needed by enrichment.
@@ -199,6 +199,33 @@ mod tests {
             resolve_state(listener.protocol, listener.socket, &tcp_states),
             State::Unknown,
             "missing TCP state data should stay UNKNOWN instead of guessing LISTEN"
+        );
+    }
+
+    #[test]
+    fn process_uptime_allows_same_second_start() {
+        assert_eq!(
+            process_uptime_secs(100, 100),
+            Some(0),
+            "same-second starts should produce a 0-second uptime instead of missing data"
+        );
+    }
+
+    #[test]
+    fn process_uptime_rejects_missing_start_time() {
+        assert_eq!(
+            process_uptime_secs(100, 0),
+            None,
+            "missing process start times should stay unavailable"
+        );
+    }
+
+    #[test]
+    fn process_uptime_rejects_future_start_time() {
+        assert_eq!(
+            process_uptime_secs(100, 101),
+            None,
+            "future start times should not underflow into fake uptimes"
         );
     }
 }
