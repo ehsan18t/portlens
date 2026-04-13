@@ -9,6 +9,9 @@
 #   5. cargo build                  → debug binary compiles
 #   6. cargo doc                    → documentation + doc-comment format valid
 #   7. cargo deny check             → no vulnerable/banned dependencies
+#
+# Advisory (non-blocking):
+#   - Benchmark regression vs PR merge-base (Criterion, 10% noise threshold)
 
 name: CI
 
@@ -97,6 +100,72 @@ jobs:
             -D rustdoc::invalid_rust_codeblocks
             -D rustdoc::private_intra_doc_links
             -D rustdoc::unescaped_backticks
+
+  # Advisory gate: Benchmark regression detection.
+  #
+  # Runs the Criterion suite twice — once on the PR's merge-base on `main`
+  # (establishing a baseline) and once on the PR head (comparing against it) —
+  # then surfaces any bench flagged by Criterion as regressed beyond the 10%
+  # noise threshold. Linux-only because Windows GitHub runners are too noisy
+  # for useful bench comparison. PR-only because pushes to `main` have no
+  # baseline to diff against.
+  #
+  # `continue-on-error: true` keeps this advisory: a regression surfaces as a
+  # warning annotation on the PR rather than blocking the merge, matching the
+  # audit job's philosophy that noisy signals should not gate unrelated work.
+  # Tighten to blocking once the noise floor on the shared runner is observed.
+  bench-regression:
+    name: Benchmark Regression (advisory)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.94.1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          key: bench
+
+      - name: Resolve merge-base
+        id: base
+        run: |
+          base=$(git merge-base HEAD origin/${{ github.base_ref }})
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          echo "Merge-base: $base"
+
+      - name: Run benchmarks on merge-base (establish baseline)
+        run: |
+          head_sha=$(git rev-parse HEAD)
+          git checkout --detach ${{ steps.base.outputs.sha }}
+          cargo bench --locked --bench benchmarks -- \
+            --save-baseline pr_base --noise-threshold 0.10
+          git checkout --detach "$head_sha"
+
+      - name: Run benchmarks on PR head and compare
+        run: |
+          cargo bench --locked --bench benchmarks -- \
+            --baseline pr_base --noise-threshold 0.10 \
+            | tee bench_output.txt
+
+      - name: Flag regressions
+        run: |
+          if grep -E "Performance has regressed" bench_output.txt; then
+            grep -B1 "Performance has regressed" bench_output.txt \
+              | sed -n 's/.*/::warning::Bench regression: &/p'
+            echo "One or more benchmarks regressed beyond the 10% noise threshold."
+            exit 1
+          fi
+          echo "No benchmark regressions detected."
 
   # Gate 7: Dependency audit — rejects vulnerable/banned/unlicensed dependencies.
   # Uses EmbarkStudios/cargo-deny-action (Docker-based, pre-built binary — no
