@@ -4,7 +4,9 @@
 //! sysinfo, queries the caches in [`CollectContext`], and assembles the
 //! final enrichment fields (container, project, framework, uptime).
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
@@ -16,6 +18,20 @@ use super::resolve;
 use super::tcp_state::TcpStateIndex;
 use super::user;
 
+/// Intern a process name into the shared `Arc<str>` set.
+///
+/// Worker-pool processes (php-fpm, node clusters, puma workers) fan out
+/// across dozens of PIDs that share the same name; interning collapses
+/// those to one heap allocation shared via refcount bumps.
+pub(super) fn intern_process_name(cache: &mut HashSet<Arc<str>>, name: &str) -> Arc<str> {
+    if let Some(existing) = cache.get(name) {
+        return Arc::clone(existing);
+    }
+    let arc: Arc<str> = Arc::from(name);
+    cache.insert(Arc::clone(&arc));
+    arc
+}
+
 /// Build a single [`PortEntry`] from a [`listeners::Listener`], enriching it
 /// with Docker, project, framework, and uptime information.
 pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> PortEntry {
@@ -24,7 +40,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         listeners::Protocol::UDP => Protocol::Udp,
     };
 
-    let state = resolve_state(l, context.tcp_states);
+    let state = resolve_state(l.protocol, l.socket, context.tcp_states);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
@@ -86,13 +102,15 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         }
     });
 
+    let process = intern_process_name(context.process_names, &l.process.name);
+
     PortEntry {
         port: l.socket.port(),
         local_addr: l.socket.ip(),
         proto,
         state,
         pid: l.process.pid,
-        process: l.process.name.clone(),
+        process,
         user,
         project: project_name,
         app,
@@ -107,10 +125,16 @@ fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn resolve_state(l: &listeners::Listener, tcp_states: &TcpStateIndex) -> State {
-    match l.protocol {
-        listeners::Protocol::TCP => tcp_states.get(&l.socket).copied().unwrap_or(State::Listen),
-        listeners::Protocol::UDP => State::Unknown,
+fn resolve_state(
+    protocol: listeners::Protocol,
+    socket: std::net::SocketAddr,
+    tcp_states: &TcpStateIndex,
+) -> State {
+    match protocol {
+        // `listeners::get_all()` includes non-listening TCP sockets too, so a
+        // missing OS state lookup must stay `UNKNOWN` instead of guessing LISTEN.
+        listeners::Protocol::TCP => tcp_states.get(&socket).copied().unwrap_or(State::Unknown),
+        listeners::Protocol::UDP => State::NotApplicable,
     }
 }
 
@@ -134,6 +158,8 @@ pub(super) fn process_refresh_kind(deep_enrichment: bool) -> ProcessRefreshKind 
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
     use super::*;
 
     #[test]
@@ -152,6 +178,27 @@ mod tests {
         assert!(
             process_executable_name(Some(exe_path)).is_none(),
             "paths without a usable file name should be ignored"
+        );
+    }
+
+    #[test]
+    fn missing_tcp_state_defaults_to_unknown() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000);
+        let listener = listeners::Listener {
+            process: listeners::Process {
+                pid: 1234,
+                name: "node".to_string(),
+                path: "/usr/bin/node".to_string(),
+            },
+            socket,
+            protocol: listeners::Protocol::TCP,
+        };
+        let tcp_states = TcpStateIndex::new();
+
+        assert_eq!(
+            resolve_state(listener.protocol, listener.socket, &tcp_states),
+            State::Unknown,
+            "missing TCP state data should stay UNKNOWN instead of guessing LISTEN"
         );
     }
 }

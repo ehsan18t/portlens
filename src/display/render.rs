@@ -94,6 +94,32 @@ pub(super) fn rendered_table_width(widths: &[usize], compact: bool) -> usize {
     }
 }
 
+pub(super) fn reduce_widths_to_fit(
+    widths: &mut [usize],
+    min_widths: &[usize],
+    shrink_order: &[usize],
+    compact: bool,
+    available_width: usize,
+) {
+    debug_assert_eq!(widths.len(), min_widths.len());
+
+    let mut overage = rendered_table_width(widths, compact).saturating_sub(available_width);
+    if overage == 0 {
+        return;
+    }
+
+    for &index in shrink_order {
+        if overage == 0 {
+            break;
+        }
+
+        let reducible = widths[index].saturating_sub(min_widths[index]);
+        let reduction = reducible.min(overage);
+        widths[index] -= reduction;
+        overage -= reduction;
+    }
+}
+
 // ── Border style presets ────────────────────────────────────────────
 
 pub(super) const fn utf8_border_style() -> BorderStyle {

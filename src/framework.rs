@@ -184,21 +184,17 @@ const PYTHON_DEPENDENCY_FILES: &[&str] = &[
     "uv.lock",
     "setup.py",
 ];
-const PYTHON_PROJECT_FILES: &[&str] = &[
-    "manage.py",
-    PYTHON_APP_FILE,
-    PYTHON_MAIN_FILE,
-    PYTHON_SERVER_FILE,
-    PYTHON_WSGI_FILE,
-    PYTHON_ASGI_FILE,
-    "pyproject.toml",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "Pipfile",
-    "poetry.lock",
-    "uv.lock",
-    "setup.py",
-];
+
+/// Check whether the project contains any Python marker file.
+///
+/// Combines `manage.py`, [`PYTHON_ENTRY_FILES`], and
+/// [`PYTHON_DEPENDENCY_FILES`] in a single pass so the constituent
+/// lists remain the single source of truth.
+fn is_python_project(files: &ProjectFiles) -> bool {
+    files.contains_exact("manage.py")
+        || files.any_exact(PYTHON_ENTRY_FILES)
+        || files.any_exact(PYTHON_DEPENDENCY_FILES)
+}
 const DJANGO_SOURCE_PATTERNS: &[&str] = &[
     "django.core.wsgi",
     "django.core.asgi",
@@ -243,7 +239,7 @@ fn detect_from_config_patterns(files: &ProjectFiles) -> Option<AppLabel> {
 }
 
 fn detect_python_project(project_root: &Path, files: &ProjectFiles) -> Option<AppLabel> {
-    if !files.any_exact(PYTHON_PROJECT_FILES) {
+    if !is_python_project(files) {
         return None;
     }
 
@@ -831,25 +827,5 @@ mod tests {
     fn combined_all_none() {
         let result = detect(None, None, "svchost");
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn python_project_files_cover_entry_files() {
-        for file_name in PYTHON_ENTRY_FILES {
-            assert!(
-                PYTHON_PROJECT_FILES.contains(file_name),
-                "{file_name} should stay in the broader Python project marker set"
-            );
-        }
-    }
-
-    #[test]
-    fn python_project_files_cover_dependency_files() {
-        for file_name in PYTHON_DEPENDENCY_FILES {
-            assert!(
-                PYTHON_PROJECT_FILES.contains(file_name),
-                "{file_name} should stay in the broader Python project marker set"
-            );
-        }
     }
 }

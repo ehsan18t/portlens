@@ -9,6 +9,16 @@
 //! - `http` — Minimal HTTP/1.0 response parser (headers via `httparse`).
 //! - `ipc` — OS-specific transport (Unix socket, Windows named pipe, TCP).
 //! - `podman` — Rootless Podman resolver via overlay metadata (Linux only).
+//!
+//! ## Future parallelization (crate extraction)
+//!
+//! When this module is extracted into a standalone crate, container detection
+//! can run concurrently with the OS socket enumeration without pulling in
+//! external dependencies. `start_detection` already returns a handle that is
+//! awaited after other I/O; a deps-free `std::thread::spawn` + `mpsc::channel`
+//! (or `OnceLock`) is sufficient. For per-container enrichment fan-out, prefer
+//! a bounded worker pool built on `std::sync::{Mutex, Arc}` over pulling in
+//! `rayon`/`dashmap` — the crate aims to stay dependency-light.
 
 mod api;
 mod http;

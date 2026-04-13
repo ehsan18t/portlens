@@ -212,55 +212,62 @@ fn read_windows_tcp_table(address_family: u32) -> Option<Vec<u8>> {
 
 #[cfg(windows)]
 fn extend_windows_tcpv4_state_index(table: &[u8], index: &mut TcpStateIndex) {
+    extend_windows_tcp_state_index(table, WINDOWS_TCP4_ROW_SIZE, 0, index, windows_tcpv4_socket);
+}
+
+#[cfg(windows)]
+fn extend_windows_tcpv6_state_index(table: &[u8], index: &mut TcpStateIndex) {
+    extend_windows_tcp_state_index(
+        table,
+        WINDOWS_TCP6_ROW_SIZE,
+        48,
+        index,
+        windows_tcpv6_socket,
+    );
+}
+
+#[cfg(windows)]
+fn extend_windows_tcp_state_index(
+    table: &[u8],
+    row_size: usize,
+    state_offset: usize,
+    index: &mut TcpStateIndex,
+    socket_from_row: fn(&[u8]) -> Option<SocketAddr>,
+) {
     let Some(rows_count) = windows_rows_count(table) else {
         return;
     };
 
-    for row in table[4..]
-        .chunks_exact(WINDOWS_TCP4_ROW_SIZE)
-        .take(rows_count)
-    {
-        let Some(state_code) = read_u32_ne(row, 0) else {
+    for row in table[4..].chunks_exact(row_size).take(rows_count) {
+        let Some(state_code) = read_u32_ne(row, state_offset) else {
             continue;
         };
-        let Some(local_addr) = read_u32_ne(row, 4) else {
+        let Some(socket) = socket_from_row(row) else {
             continue;
         };
-        let Some(port) = read_windows_port(row, 8) else {
-            continue;
-        };
-
-        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(u32::from_be(local_addr))), port);
         merge_tcp_state(index, socket, state_from_windows_code(state_code));
     }
 }
 
 #[cfg(windows)]
-fn extend_windows_tcpv6_state_index(table: &[u8], index: &mut TcpStateIndex) {
-    let Some(rows_count) = windows_rows_count(table) else {
-        return;
-    };
+fn windows_tcpv4_socket(row: &[u8]) -> Option<SocketAddr> {
+    let local_addr = read_u32_ne(row, 4)?;
+    let port = read_windows_port(row, 8)?;
+    Some(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::from(u32::from_be(local_addr))),
+        port,
+    ))
+}
 
-    for row in table[4..]
-        .chunks_exact(WINDOWS_TCP6_ROW_SIZE)
-        .take(rows_count)
-    {
-        let Some(state_code) = read_u32_ne(row, 48) else {
-            continue;
-        };
-        let Some(local_addr_bytes) = row.get(0..16) else {
-            continue;
-        };
-        let Some(port) = read_windows_port(row, 20) else {
-            continue;
-        };
-        let Ok(local_addr) = <[u8; 16]>::try_from(local_addr_bytes) else {
-            continue;
-        };
-
-        let socket = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(local_addr)), port);
-        merge_tcp_state(index, socket, state_from_windows_code(state_code));
-    }
+#[cfg(windows)]
+fn windows_tcpv6_socket(row: &[u8]) -> Option<SocketAddr> {
+    let local_addr_bytes = row.get(0..16)?;
+    let port = read_windows_port(row, 20)?;
+    let local_addr = <[u8; 16]>::try_from(local_addr_bytes).ok()?;
+    Some(SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::from(local_addr)),
+        port,
+    ))
 }
 
 #[cfg(windows)]

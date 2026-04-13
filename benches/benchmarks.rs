@@ -5,6 +5,7 @@
 //! results reflect only the code under test.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use portview::docker;
@@ -32,8 +33,8 @@ fn synthetic_entries(n: u16) -> Vec<PortEntry> {
                 State::NotApplicable
             },
             pid: 1000 + u32::from(i),
-            process: format!("proc_{i}"),
-            user: "user".to_string(),
+            process: Arc::from(format!("proc_{i}").as_str()),
+            user: "user".into(),
             project: if i % 4 == 0 {
                 Some(format!("project_{i}"))
             } else {

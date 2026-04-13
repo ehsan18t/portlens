@@ -9,14 +9,27 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 #[cfg(unix)]
 use std::mem::MaybeUninit;
+use std::sync::Arc;
+#[cfg(windows)]
+use sysinfo::Users;
 
 /// Cache for resolved usernames, keyed by the OS-specific identity.
+///
+/// Values are `Arc<str>` so every `PortEntry` owned by the same user
+/// shares one heap allocation; cache clones are refcount bumps.
 #[derive(Default)]
 pub(super) struct UserResolver {
     #[cfg(unix)]
-    pub names_by_uid: HashMap<libc::uid_t, String>,
+    pub names_by_uid: HashMap<libc::uid_t, Arc<str>>,
     #[cfg(windows)]
-    pub names_by_pid: HashMap<u32, String>,
+    pub names_by_sid: HashMap<String, Arc<str>>,
+    #[cfg(windows)]
+    users: Users,
+}
+
+#[inline]
+fn unknown_user() -> Arc<str> {
+    Arc::from("-")
 }
 
 // ---------------------------------------------------------------------------
@@ -31,22 +44,23 @@ pub(super) fn resolve_user(
     process: Option<&sysinfo::Process>,
     _pid: u32,
     resolver: &mut UserResolver,
-) -> String {
+) -> Arc<str> {
     let Some(proc_ref) = process else {
-        return "-".to_string();
+        return unknown_user();
     };
 
     let Some(uid) = proc_ref.user_id() else {
-        return "-".to_string();
+        return unknown_user();
     };
 
     let uid = **uid;
     if let Some(cached) = resolver.names_by_uid.get(&uid) {
-        return cached.clone();
+        return Arc::clone(cached);
     }
 
-    let name = lookup_unix_username(uid).unwrap_or_else(|| "-".to_string());
-    resolver.names_by_uid.insert(uid, name.clone());
+    let name: Arc<str> =
+        lookup_unix_username(uid).map_or_else(unknown_user, |s| Arc::from(s.as_str()));
+    resolver.names_by_uid.insert(uid, Arc::clone(&name));
     name
 }
 
@@ -107,23 +121,39 @@ fn lookup_unix_username(uid: libc::uid_t) -> Option<String> {
 #[cfg(windows)]
 pub(super) fn resolve_user(
     process: Option<&sysinfo::Process>,
-    pid: u32,
+    _pid: u32,
     resolver: &mut UserResolver,
-) -> String {
-    if let Some(cached) = resolver.names_by_pid.get(&pid) {
-        return cached.clone();
+) -> Arc<str> {
+    let Some(uid) = process.and_then(sysinfo::Process::user_id) else {
+        return unknown_user();
+    };
+
+    let sid = format_windows_user_id(uid);
+    if let Some(cached) = resolver.names_by_sid.get(&sid) {
+        return Arc::clone(cached);
     }
 
-    let name = process
-        .and_then(sysinfo::Process::user_id)
-        .map_or_else(|| "-".to_string(), format_windows_user_id);
-    resolver.names_by_pid.insert(pid, name.clone());
-    name
+    let resolved_name = resolve_windows_user_name(
+        resolver.users.get_user_by_id(uid).map(sysinfo::User::name),
+        uid,
+    );
+    resolver
+        .names_by_sid
+        .insert(sid, Arc::clone(&resolved_name));
+    resolved_name
 }
 
 #[cfg(windows)]
 fn format_windows_user_id(uid: &sysinfo::Uid) -> String {
     (**uid).to_string()
+}
+
+#[cfg(windows)]
+fn resolve_windows_user_name(resolved_name: Option<&str>, uid: &sysinfo::Uid) -> Arc<str> {
+    resolved_name.filter(|name| !name.is_empty()).map_or_else(
+        || Arc::from(format_windows_user_id(uid).as_str()),
+        Arc::from,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +165,8 @@ pub(super) fn resolve_user(
     _process: Option<&sysinfo::Process>,
     _pid: u32,
     _resolver: &mut UserResolver,
-) -> String {
-    "-".to_string()
+) -> Arc<str> {
+    unknown_user()
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +269,36 @@ mod tests {
             format_windows_user_id(&uid),
             "S-1-5-18",
             "Windows fallback should preserve the SID string when account-name lookup is unavailable"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_user_name_prefers_resolved_account_name() {
+        let uid = "S-1-5-18"
+            .parse::<sysinfo::Uid>()
+            .expect("well-known SID should parse into sysinfo::Uid");
+
+        let resolved = resolve_windows_user_name(Some("SYSTEM"), &uid);
+
+        assert_eq!(
+            &*resolved, "SYSTEM",
+            "resolved Windows account names should be preferred over raw SID strings"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_user_name_falls_back_to_sid_when_lookup_is_missing() {
+        let uid = "S-1-5-18"
+            .parse::<sysinfo::Uid>()
+            .expect("well-known SID should parse into sysinfo::Uid");
+
+        let resolved = resolve_windows_user_name(None, &uid);
+
+        assert_eq!(
+            &*resolved, "S-1-5-18",
+            "missing Windows account lookups should fall back to the SID string"
         );
     }
 }

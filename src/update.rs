@@ -36,62 +36,105 @@ const REPO_NAME: &str = "portview";
 /// the result without downloading or replacing anything.
 pub fn run(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    eprintln!("Current version: {current}");
-    eprint!("Checking for updates... ");
-
-    let release = fetch_latest_release().context("failed to check for updates")?;
+    let release = check_for_update(current)?;
 
     let remote = &release.tag_name;
 
-    match compare_versions(current, remote) {
-        Ordering::Less => {}
-        Ordering::Equal | Ordering::Greater => {
-            eprintln!("up to date.");
-            eprintln!("portview is already up to date ({current}).");
-            return Ok(());
-        }
+    if !is_update_available(current, remote) {
+        print_up_to_date(current);
+        return Ok(());
     }
 
-    eprintln!("new version available!");
-    eprintln!("New version: {remote} (current: {current})");
+    print_available_update(current, remote);
 
     if check_only {
         print_manual_download_info(&release);
         return Ok(());
     }
 
+    install_update(&release, current, remote)
+}
+
+fn check_for_update(current: &str) -> Result<Release> {
+    eprintln!("Current version: {current}");
+    eprint!("Checking for updates... ");
+    fetch_latest_release().context("failed to check for updates")
+}
+
+fn is_update_available(current: &str, remote: &str) -> bool {
+    compare_versions(current, remote) == Ordering::Less
+}
+
+fn print_up_to_date(current: &str) {
+    eprintln!("up to date.");
+    eprintln!("portview is already up to date ({current}).");
+}
+
+fn print_available_update(current: &str, remote: &str) {
+    eprintln!("new version available!");
+    eprintln!("New version: {remote} (current: {current})");
+}
+
+fn install_update(release: &Release, current: &str, remote: &str) -> Result<()> {
     match detect_platform()? {
-        Platform::WindowsExe => {
-            apply_asset_update(&release, remote, "exe", download_and_replace_windows)?;
-            eprintln!("Updated portview: {current} -> {remote}");
+        Platform::WindowsExe => install_release_asset(
+            release,
+            current,
+            remote,
+            "exe",
+            download_and_replace_windows,
+        ),
+        Platform::LinuxTarGz => install_release_asset(
+            release,
+            current,
+            remote,
+            "tar.gz",
+            download_and_replace_linux_tar,
+        ),
+        Platform::LinuxDeb => {
+            notify_package_managed(release, "dpkg (Debian/Ubuntu)");
+            Ok(())
         }
-        Platform::LinuxTarGz => {
-            apply_asset_update(&release, remote, "tar.gz", download_and_replace_linux_tar)?;
-            eprintln!("Updated portview: {current} -> {remote}");
+        Platform::LinuxRpm => {
+            notify_package_managed(release, "rpm (Fedora/RHEL)");
+            Ok(())
         }
-        Platform::LinuxDeb => notify_package_managed(&release, "dpkg (Debian/Ubuntu)"),
-        Platform::LinuxRpm => notify_package_managed(&release, "rpm (Fedora/RHEL)"),
         Platform::Unsupported => {
-            eprintln!();
-            eprintln!("WARNING: Auto-update is not available on this platform.");
-            eprintln!("Please download the new version manually:");
-            print_manual_download_info(&release);
+            notify_unsupported_platform(release);
+            Ok(())
         }
     }
+}
 
+fn install_release_asset(
+    release: &Release,
+    current: &str,
+    remote: &str,
+    ext: &str,
+    install: fn(&Asset, &Path) -> Result<()>,
+) -> Result<()> {
+    apply_asset_update(release, remote, ext, install)?;
+    eprintln!("Updated portview: {current} -> {remote}");
     Ok(())
+}
+
+fn notify_unsupported_platform(release: &Release) {
+    eprintln!();
+    eprintln!("WARNING: Auto-update is not available on this platform.");
+    eprintln!("Please download the new version manually:");
+    print_manual_download_info(release);
 }
 
 fn apply_asset_update(
     release: &Release,
     remote: &str,
     ext: &str,
-    install: fn(&str, &Path) -> Result<()>,
+    install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
     let asset_name = format!("portview-{remote}-x86_64.{ext}");
     let asset = find_asset(release, &asset_name)?;
     let binary_path = current_exe_path()?;
-    install(&asset.browser_download_url, &binary_path)
+    install(asset, &binary_path)
 }
 
 fn notify_package_managed(release: &Release, manager: &str) {
@@ -173,6 +216,7 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+    size_bytes: Option<u64>,
 }
 
 /// Execute curl and return stdout as a string.
@@ -180,27 +224,11 @@ struct Asset {
 /// Fails with a descriptive message if curl is not installed or exits
 /// with a non-zero status.
 fn curl_get_string(url: &str) -> Result<String> {
-    let version = env!("CARGO_PKG_VERSION");
-    let output = ProcessCommand::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "30",
-            "--header",
-            "Accept: application/vnd.github+json",
-            "--header",
-            &format!("User-Agent: portview/{version}"),
-            url,
-        ])
-        .output()
-        .context(
-            "failed to run curl. Is curl installed?\n  \
+    let output = curl_api_command(url).output().context(
+        "failed to run curl. Is curl installed?\n  \
              On Windows 10+ curl ships with the OS.\n  \
              On Linux install it via your package manager (e.g. apt install curl).",
-        )?;
+    )?;
 
     if !output.status.success() {
         return Err(api_curl_error(&output, url));
@@ -211,21 +239,7 @@ fn curl_get_string(url: &str) -> Result<String> {
 
 /// Download a file to a local path using curl.
 fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
-    let version = env!("CARGO_PKG_VERSION");
-    let output = ProcessCommand::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "120",
-            "--header",
-            &format!("User-Agent: portview/{version}"),
-            "--output",
-        ])
-        .arg(dest)
-        .arg(url)
+    let output = curl_download_command(url, dest)
         .output()
         .context("failed to run curl for download")?;
 
@@ -235,6 +249,36 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn base_curl_command(timeout_seconds: &str) -> ProcessCommand {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut command = ProcessCommand::new("curl");
+    command
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--max-time")
+        .arg(timeout_seconds)
+        .arg("--header")
+        .arg(format!("User-Agent: portview/{version}"));
+    command
+}
+
+fn curl_api_command(url: &str) -> ProcessCommand {
+    let mut command = base_curl_command("30");
+    command
+        .arg("--header")
+        .arg("Accept: application/vnd.github+json")
+        .arg(url);
+    command
+}
+
+fn curl_download_command(url: &str, dest: &Path) -> ProcessCommand {
+    let mut command = base_curl_command("120");
+    command.arg("--output").arg(dest).arg(url);
+    command
 }
 
 /// Extract the exit code and stderr text from a failed curl invocation.
@@ -290,6 +334,7 @@ fn parse_release_json(body: &str) -> Result<Release> {
                     Some(Asset {
                         name: a["name"].as_str()?.to_owned(),
                         browser_download_url: a["browser_download_url"].as_str()?.to_owned(),
+                        size_bytes: a["size"].as_u64(),
                     })
                 })
                 .collect()
@@ -309,13 +354,20 @@ fn parse_release_json(body: &str) -> Result<Release> {
 
 /// Compare two semver-like version strings.
 ///
-/// Compares numeric `MAJOR.MINOR.PATCH` segments first, then applies
-/// `SemVer` pre-release precedence (§11): a version without a pre-release
-/// tag has higher precedence than the same numeric triple with one.
-/// Build metadata (after `+`) is ignored per §10. Non-numeric core
-/// segments fall back to `0` so malformed upstream tags sort defensively.
+/// Strips a leading `v` / `V` prefix (common in GitHub release tags)
+/// before parsing. Compares numeric `MAJOR.MINOR.PATCH` segments first,
+/// then applies `SemVer` pre-release precedence (SS11): a version without
+/// a pre-release tag has higher precedence than the same numeric triple
+/// with one. Build metadata (after `+`) is ignored per SS10. Non-numeric
+/// core segments fall back to `0` so malformed upstream tags sort
+/// defensively.
 fn compare_versions(current: &str, remote: &str) -> Ordering {
     fn split(v: &str) -> (Vec<u64>, Option<&str>) {
+        // Strip leading `v` / `V` prefix common in GitHub release tags.
+        let v = v
+            .strip_prefix('v')
+            .or_else(|| v.strip_prefix('V'))
+            .unwrap_or(v);
         // Strip build metadata (`+...`) first, then split core from pre-release.
         let v = v.split('+').next().unwrap_or(v);
         let (core, pre) = match v.split_once('-') {
@@ -433,14 +485,14 @@ fn temp_path_beside(binary_path: &Path, suffix: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-fn download_and_replace_windows(url: &str, binary_path: &Path) -> Result<()> {
+fn download_and_replace_windows(asset: &Asset, binary_path: &Path) -> Result<()> {
     eprintln!("Downloading update...");
 
     let temp = temp_path_beside(binary_path, ".exe")?;
     let old = temp_path_beside(binary_path, ".old.exe")?;
 
-    curl_download_file(url, &temp)?;
-    verify_min_size(&temp, 1024, "binary")?;
+    curl_download_file(&asset.browser_download_url, &temp)?;
+    verify_download_size(&temp, asset.size_bytes, 1024, "binary")?;
 
     // Rename current -> old, temp -> current
     // On Windows the running .exe can be renamed but not deleted.
@@ -474,7 +526,7 @@ fn download_and_replace_windows(url: &str, binary_path: &Path) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
+fn download_and_replace_windows(_asset: &Asset, _binary_path: &Path) -> Result<()> {
     bail!("Windows update is not available on this platform")
 }
 
@@ -483,75 +535,97 @@ fn download_and_replace_windows(_url: &str, _binary_path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
+fn download_and_replace_linux_tar(asset: &Asset, binary_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     eprintln!("Downloading update...");
 
     let temp_archive = temp_path_beside(binary_path, ".tar.gz")?;
     let extract_dir = temp_path_beside(binary_path, ".extract")?;
 
-    curl_download_file(url, &temp_archive)?;
-    verify_min_size(&temp_archive, 1024, "archive")?;
-
-    // Extract via the system `tar` command (ships with every Linux distro).
-    // This avoids a dependency on the `tar` and `flate2` Rust crates.
-    if extract_dir.exists() {
-        drop(std::fs::remove_dir_all(&extract_dir));
-    }
-    std::fs::create_dir_all(&extract_dir).with_context(|| {
-        format!(
-            "failed to create extraction directory: {}",
-            extract_dir.display()
-        )
-    })?;
-
-    let status = ProcessCommand::new("tar")
-        .arg("-xzf")
-        .arg(&temp_archive)
-        .arg("-C")
-        .arg(&extract_dir)
-        .status()
-        .context(
-            "failed to run tar. Is tar installed?\n  \
-             On Linux install it via your package manager (e.g. apt install tar).",
-        )?;
-
-    // Clean up archive regardless of extraction outcome
-    drop(std::fs::remove_file(&temp_archive));
-
-    if !status.success() {
-        drop(std::fs::remove_dir_all(&extract_dir));
-        bail!(
-            "tar extraction failed (exit code {}).",
-            status.code().unwrap_or(-1)
-        );
-    }
-
-    // Locate the extracted `portview` binary (may be at root or in a subdirectory)
-    let temp_binary = find_portview_in_dir(&extract_dir).with_context(|| {
-        format!(
-            "Archive does not contain a 'portview' binary: {}",
-            extract_dir.display()
-        )
-    })?;
+    download_archive(asset, &temp_archive)?;
+    let temp_binary = extract_portview_binary(&temp_archive, &extract_dir)?;
 
     // Set executable permission
     let permissions = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(&temp_binary, permissions)
         .context("failed to set executable permission on updated binary")?;
 
-    // Atomic replace: rename extracted binary over current binary
-    let rename_result = std::fs::rename(&temp_binary, binary_path).with_context(|| {
-        format!(
-            "Failed to replace binary. Try running with sudo.\n  Path: {}",
-            binary_path.display()
-        )
-    });
+    let rename_result = replace_linux_binary(&temp_binary, binary_path);
 
     // Best-effort cleanup of extraction directory
     drop(std::fs::remove_dir_all(&extract_dir));
 
     rename_result
+}
+
+#[cfg(unix)]
+fn download_archive(asset: &Asset, archive_path: &Path) -> Result<()> {
+    curl_download_file(&asset.browser_download_url, archive_path)?;
+    verify_download_size(archive_path, asset.size_bytes, 1024, "archive")
+}
+
+#[cfg(unix)]
+fn extract_portview_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
+    recreate_directory(extract_dir)?;
+
+    let extraction_result = extract_archive_with_tar(archive_path, extract_dir).and_then(|()| {
+        find_portview_in_dir(extract_dir).with_context(|| {
+            format!(
+                "Archive does not contain a 'portview' binary: {}",
+                extract_dir.display()
+            )
+        })
+    });
+
+    drop(std::fs::remove_file(archive_path));
+    if extraction_result.is_err() {
+        drop(std::fs::remove_dir_all(extract_dir));
+    }
+
+    extraction_result
+}
+
+#[cfg(unix)]
+fn recreate_directory(path: &Path) -> Result<()> {
+    if path.exists() {
+        drop(std::fs::remove_dir_all(path));
+    }
+
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create extraction directory: {}", path.display()))
+}
+
+#[cfg(unix)]
+fn extract_archive_with_tar(archive_path: &Path, extract_dir: &Path) -> Result<()> {
+    let status = ProcessCommand::new("tar")
+        .arg("-xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(extract_dir)
+        .status()
+        .context(
+            "failed to run tar. Is tar installed?\n  \
+             On Linux install it via your package manager (e.g. apt install tar).",
+        )?;
+
+    if !status.success() {
+        bail!(
+            "tar extraction failed (exit code {}).",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn replace_linux_binary(temp_binary: &Path, binary_path: &Path) -> Result<()> {
+    std::fs::rename(temp_binary, binary_path).with_context(|| {
+        format!(
+            "Failed to replace binary. Try running with sudo.\n  Path: {}",
+            binary_path.display()
+        )
+    })
 }
 
 /// Recursively search `dir` for a file named `portview` and return its path.
@@ -579,10 +653,30 @@ fn find_portview_in_dir(dir: &Path) -> Result<PathBuf> {
     bail!("no 'portview' binary found under {}", dir.display())
 }
 
-/// Verify a downloaded file meets a minimum size; remove it and bail otherwise.
-fn verify_min_size(path: &Path, min_bytes: u64, kind: &str) -> Result<()> {
+/// Verify a downloaded file matches the expected asset size when available.
+///
+/// Falls back to a minimum-size guard only when the upstream release metadata
+/// omitted the asset size.
+fn verify_download_size(
+    path: &Path,
+    expected_bytes: Option<u64>,
+    min_bytes: u64,
+    kind: &str,
+) -> Result<()> {
     let meta = std::fs::metadata(path)
         .with_context(|| format!("failed to read downloaded file: {}", path.display()))?;
+
+    if let Some(expected_bytes) = expected_bytes.filter(|size| *size > 0) {
+        if meta.len() != expected_bytes {
+            drop(std::fs::remove_file(path));
+            bail!(
+                "Downloaded {kind} size mismatch (expected {expected_bytes} bytes, got {} bytes).",
+                meta.len()
+            );
+        }
+        return Ok(());
+    }
+
     if meta.len() < min_bytes {
         drop(std::fs::remove_file(path));
         bail!(
@@ -594,7 +688,7 @@ fn verify_min_size(path: &Path, min_bytes: u64, kind: &str) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn download_and_replace_linux_tar(_url: &str, _binary_path: &Path) -> Result<()> {
+fn download_and_replace_linux_tar(_asset: &Asset, _binary_path: &Path) -> Result<()> {
     bail!("Linux tar.gz update is not available on this platform")
 }
 
@@ -620,6 +714,10 @@ fn print_manual_download_info(release: &Release) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -681,6 +779,35 @@ mod tests {
     }
 
     #[test]
+    fn v_prefixed_tag_is_compared_correctly() {
+        assert_eq!(
+            compare_versions("0.1.0", "v0.2.0"),
+            Ordering::Less,
+            "v-prefixed remote should be parsed as 0.2.0"
+        );
+        assert_eq!(
+            compare_versions("0.1.0", "v1.0.0"),
+            Ordering::Less,
+            "v-prefixed major bump should be detected"
+        );
+        assert_eq!(
+            compare_versions("v1.0.0", "v1.0.0"),
+            Ordering::Equal,
+            "identical v-prefixed versions should be equal"
+        );
+        assert_eq!(
+            compare_versions("1.0.0", "V1.0.0"),
+            Ordering::Equal,
+            "uppercase V prefix should be stripped"
+        );
+        assert_eq!(
+            compare_versions("v1.0.0-rc1", "v1.0.0"),
+            Ordering::Less,
+            "v-prefixed pre-release should be less than release"
+        );
+    }
+
+    #[test]
     fn core_takes_precedence_over_prerelease() {
         assert_eq!(compare_versions("1.0.0-rc1", "0.9.9"), Ordering::Greater);
         assert_eq!(compare_versions("0.9.9", "1.0.0-rc1"), Ordering::Less);
@@ -710,6 +837,8 @@ mod tests {
         assert_eq!(release.assets.len(), 2);
         assert_eq!(release.assets[0].name, "portview-0.2.0-x86_64.exe");
         assert_eq!(release.assets[1].name, "portview-0.2.0-x86_64.tar.gz");
+        assert_eq!(release.assets[0].size_bytes, Some(2_048_000));
+        assert_eq!(release.assets[1].size_bytes, Some(1_024_000));
     }
 
     #[test]
@@ -741,16 +870,19 @@ mod tests {
                 Asset {
                     name: "portview-0.2.0-x86_64.exe".to_owned(),
                     browser_download_url: "https://example.com/exe".to_owned(),
+                    size_bytes: Some(1234),
                 },
                 Asset {
                     name: "portview-0.2.0-x86_64.tar.gz".to_owned(),
                     browser_download_url: "https://example.com/tar".to_owned(),
+                    size_bytes: Some(5678),
                 },
             ],
         };
 
         let asset = find_asset(&release, "portview-0.2.0-x86_64.exe").unwrap();
         assert_eq!(asset.browser_download_url, "https://example.com/exe");
+        assert_eq!(asset.size_bytes, Some(1234));
     }
 
     #[test]
@@ -762,5 +894,53 @@ mod tests {
         };
 
         assert!(find_asset(&release, "portview-0.2.0-x86_64.exe").is_err());
+    }
+
+    #[test]
+    fn verify_download_size_accepts_exact_asset_size() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 8]).unwrap();
+
+        verify_download_size(&file_path, Some(8), 1024, "binary")
+            .expect("exact asset size should pass verification");
+    }
+
+    #[test]
+    fn verify_download_size_rejects_mismatched_asset_size() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 8]).unwrap();
+
+        let error = verify_download_size(&file_path, Some(9), 1024, "binary")
+            .expect_err("mismatched asset sizes should be rejected");
+
+        assert!(
+            error.to_string().contains("size mismatch"),
+            "verification errors should explain the size mismatch"
+        );
+        assert!(
+            !file_path.exists(),
+            "failed size verification should remove the downloaded file"
+        );
+    }
+
+    #[test]
+    fn verify_download_size_falls_back_to_minimum_size_without_metadata() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("portview.exe");
+        fs::write(&file_path, [0_u8; 16]).unwrap();
+
+        let error = verify_download_size(&file_path, None, 1024, "binary")
+            .expect_err("missing metadata should still honor the minimum-size guard");
+
+        assert!(
+            error.to_string().contains("too small"),
+            "fallback verification should keep the existing minimum-size message"
+        );
+        assert!(
+            !file_path.exists(),
+            "failed minimum-size verification should remove the downloaded file"
+        );
     }
 }

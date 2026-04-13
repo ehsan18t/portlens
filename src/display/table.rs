@@ -12,7 +12,8 @@ use crate::types::PortEntry;
 use super::DisplayOptions;
 use super::render::{
     Alignment, BorderStyle, ascii_border_style, display_width, format_cell, pad_value,
-    render_border_line, render_bordered_cells, rendered_table_width, utf8_border_style,
+    reduce_widths_to_fit, render_border_line, render_bordered_cells, rendered_table_width,
+    truncate_to_width, utf8_border_style,
 };
 use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
 
@@ -73,15 +74,16 @@ pub(super) fn write_table_with_width(
     terminal_width: Option<usize>,
 ) -> Result<()> {
     let columns = table_columns(opts.full);
+    let use_compact = should_use_compact_layout(columns, opts.compact, terminal_width);
     let rows = build_rows(entries, columns);
     let widths = fit_table_widths(
         columns,
         &measure_column_widths(columns, &rows, opts.show_header),
-        opts.compact,
+        use_compact,
         terminal_width,
     );
 
-    if opts.compact {
+    if use_compact {
         write_compact_table(writer, columns, &rows, &widths, opts.show_header)?;
     } else {
         let style = if terminal_supports_utf8_borders() {
@@ -104,6 +106,17 @@ fn build_rows(entries: &[PortEntry], columns: &[Column]) -> Vec<Vec<String>> {
         .iter()
         .map(|entry| columns.iter().map(|column| column.value(entry)).collect())
         .collect()
+}
+
+fn should_use_compact_layout(
+    columns: &[Column],
+    compact_requested: bool,
+    terminal_width: Option<usize>,
+) -> bool {
+    compact_requested
+        || terminal_width.is_some_and(|available_width| {
+            minimum_table_width(columns.len(), false) > available_width
+        })
 }
 
 fn measure_column_widths(
@@ -148,21 +161,22 @@ fn fit_table_widths(
         .iter()
         .map(|column| column.preferred_min_width())
         .collect::<Vec<_>>();
+    let shrink_order = sorted_shrink_order(columns);
 
-    shrink_widths_to_budget(
+    reduce_widths_to_fit(
         &mut widths,
-        columns,
         &preferred_min_widths,
+        &shrink_order,
         compact,
         available_width,
     );
 
     if rendered_table_width(&widths, compact) > available_width {
         let hard_min_widths = vec![1; columns.len()];
-        shrink_widths_to_budget(
+        reduce_widths_to_fit(
             &mut widths,
-            columns,
             &hard_min_widths,
+            &shrink_order,
             compact,
             available_width,
         );
@@ -171,31 +185,18 @@ fn fit_table_widths(
     widths
 }
 
-fn shrink_widths_to_budget(
-    widths: &mut [usize],
-    columns: &[Column],
-    min_widths: &[usize],
-    compact: bool,
-    available_width: usize,
-) {
-    let mut overage = rendered_table_width(widths, compact).saturating_sub(available_width);
-    if overage == 0 {
-        return;
+const fn minimum_table_width(column_count: usize, compact: bool) -> usize {
+    if compact {
+        column_count.saturating_mul(3).saturating_sub(2)
+    } else {
+        column_count.saturating_mul(4).saturating_add(1)
     }
+}
 
+fn sorted_shrink_order(columns: &[Column]) -> Vec<usize> {
     let mut column_indexes = (0..columns.len()).collect::<Vec<_>>();
     column_indexes.sort_by_key(|index| columns[*index].shrink_priority());
-
-    for index in column_indexes {
-        if overage == 0 {
-            break;
-        }
-
-        let reducible = widths[index].saturating_sub(min_widths[index]);
-        let reduction = reducible.min(overage);
-        widths[index] -= reduction;
-        overage -= reduction;
-    }
+    column_indexes
 }
 
 fn write_bordered_table(
@@ -261,11 +262,10 @@ fn write_compact_table(
     );
 
     if lines.is_empty() {
-        writeln!(writer).context("failed to write compact table to stdout")?;
-    } else {
-        writeln!(writer, "{}", lines.join("\n"))
-            .context("failed to write compact table to stdout")?;
+        return Ok(());
     }
+
+    writeln!(writer, "{}", lines.join("\n")).context("failed to write compact table to stdout")?;
 
     Ok(())
 }
@@ -297,7 +297,9 @@ fn render_compact_header(columns: &[Column], widths: &[usize]) -> String {
     let cells = columns
         .iter()
         .zip(widths)
-        .map(|(column, width)| pad_value(column.heading(), *width, Alignment::Left))
+        .map(|(column, width)| {
+            format_compact_cell(column.heading_for_width(*width), *width, Alignment::Left)
+        })
         .collect::<Vec<_>>();
 
     render_compact_cells(&cells)
@@ -308,7 +310,7 @@ fn render_compact_row(row: &[String], columns: &[Column], widths: &[usize]) -> S
         .iter()
         .zip(columns)
         .zip(widths)
-        .map(|((cell, column), width)| pad_value(cell, *width, column.alignment()))
+        .map(|((cell, column), width)| format_compact_cell(cell, *width, column.alignment()))
         .collect::<Vec<_>>();
 
     render_compact_cells(&cells)
@@ -316,6 +318,11 @@ fn render_compact_row(row: &[String], columns: &[Column], widths: &[usize]) -> S
 
 fn render_compact_cells(cells: &[String]) -> String {
     cells.join("  ")
+}
+
+fn format_compact_cell(value: &str, width: usize, alignment: Alignment) -> String {
+    let clipped = truncate_to_width(value, width);
+    pad_value(&clipped, width, alignment)
 }
 
 // ── Data formatting ─────────────────────────────────────────────────
@@ -354,33 +361,6 @@ fn format_uptime(secs: Option<u64>) -> String {
     }
 
     "< 1m".to_string()
-}
-
-/// Truncate a process name to [`MAX_PROCESS_NAME_LEN`] characters with an
-/// ellipsis if it exceeds the limit.
-///
-/// Uses character boundaries and stops after the first 21 characters, so
-/// oversized names are not traversed twice.
-fn truncate_process_name(name: &str) -> String {
-    let mut ellipsis_index = None;
-    let mut needs_truncation = false;
-
-    for (index, (byte_index, _)) in name.char_indices().enumerate() {
-        if index == MAX_PROCESS_NAME_LEN - 1 {
-            ellipsis_index = Some(byte_index);
-        } else if index == MAX_PROCESS_NAME_LEN {
-            needs_truncation = true;
-            break;
-        }
-    }
-
-    if !needs_truncation {
-        return name.to_string();
-    }
-
-    let mut truncated = name[..ellipsis_index.unwrap_or_default()].to_string();
-    truncated.push('\u{2026}');
-    truncated
 }
 
 // ── Column metadata ─────────────────────────────────────────────────
@@ -458,9 +438,9 @@ impl Column {
             Self::Proto => entry.proto.to_string(),
             Self::Address => entry.local_addr.to_string(),
             Self::State => entry.state.to_string(),
-            Self::Process => truncate_process_name(&entry.process),
+            Self::Process => truncate_to_width(&entry.process, MAX_PROCESS_NAME_LEN),
             Self::Pid => entry.pid.to_string(),
-            Self::User => entry.user.clone(),
+            Self::User => entry.user.to_string(),
             Self::Project => entry.project.as_deref().unwrap_or("-").to_string(),
             Self::App => entry.app.as_deref().unwrap_or("-").to_string(),
             Self::Uptime => format_uptime(entry.uptime_secs),
@@ -470,10 +450,9 @@ impl Column {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-
+    use super::super::sample_entry_for_tests;
     use super::*;
-    use crate::types::{PortEntry, Protocol, State};
+    use crate::types::PortEntry;
 
     #[test]
     fn format_uptime_none() {
@@ -581,36 +560,40 @@ mod tests {
         );
     }
 
-    fn sample_entry() -> PortEntry {
-        PortEntry {
-            port: 8080,
-            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            proto: Protocol::Tcp,
-            state: State::Listen,
-            pid: 1234,
-            process: "node".to_string(),
-            user: "user".to_string(),
-            project: Some("my-app".to_string()),
-            app: Some("Next.js".into()),
-            uptime_secs: Some(3600),
+    fn display_options(show_header: bool, full: bool, compact: bool) -> DisplayOptions {
+        DisplayOptions {
+            show_header,
+            full,
+            compact,
         }
+    }
+
+    fn render_table_output(
+        entries: &[PortEntry],
+        opts: &DisplayOptions,
+        width: Option<usize>,
+    ) -> String {
+        let mut buffer = Vec::new();
+        write_table_with_width(&mut buffer, entries, opts, width)
+            .expect("write_table_with_width should succeed");
+        String::from_utf8(buffer).expect("output should be valid UTF-8")
     }
 
     #[test]
     fn short_name_unchanged() {
-        assert_eq!(truncate_process_name("sshd"), "sshd");
+        assert_eq!(truncate_to_width("sshd", MAX_PROCESS_NAME_LEN), "sshd");
     }
 
     #[test]
     fn exact_length_unchanged() {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN);
-        assert_eq!(truncate_process_name(&name), name);
+        assert_eq!(truncate_to_width(&name, MAX_PROCESS_NAME_LEN), name);
     }
 
     #[test]
     fn long_name_truncated() {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN + 5);
-        let result = truncate_process_name(&name);
+        let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
         assert_eq!(
             result.chars().count(),
             MAX_PROCESS_NAME_LEN,
@@ -626,7 +609,7 @@ mod tests {
     fn multibyte_name_does_not_panic() {
         // CJK characters are 3 bytes each in UTF-8
         let name = "\u{4e16}\u{754c}".repeat(MAX_PROCESS_NAME_LEN);
-        let result = truncate_process_name(&name);
+        let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
         assert_eq!(
             result.chars().count(),
             MAX_PROCESS_NAME_LEN,
@@ -640,15 +623,9 @@ mod tests {
 
     #[test]
     fn write_table_default_columns_include_expected_headers() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(true, false, false);
+        let output = render_table_output(&entries, &opts, None);
 
         for header in [
             "PORT", "PROTO", "ADDRESS", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
@@ -670,15 +647,9 @@ mod tests {
 
     #[test]
     fn write_table_full_columns_include_state_and_user() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: true,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(true, true, false);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(
             output.contains("STATE"),
@@ -692,15 +663,9 @@ mod tests {
 
     #[test]
     fn write_table_no_header_omits_column_names() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(false, false, false);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(
             !output.contains("PROTO"),
@@ -710,15 +675,9 @@ mod tests {
 
     #[test]
     fn write_table_renders_entry_values() {
-        let entries = vec![sample_entry()];
-        let opts = DisplayOptions {
-            show_header: false,
-            full: false,
-            compact: true,
-        };
-        let mut buffer = Vec::new();
-        write_table(&mut buffer, &entries, &opts).expect("write_table should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let entries = vec![sample_entry_for_tests()];
+        let opts = display_options(false, false, true);
+        let output = render_table_output(&entries, &opts, None);
 
         assert!(output.contains("8080"), "table should contain port number");
         assert!(output.contains("TCP"), "table should contain protocol");
@@ -733,20 +692,11 @@ mod tests {
 
     #[test]
     fn write_table_fits_within_requested_terminal_width() {
-        let mut entry = sample_entry();
+        let mut entry = sample_entry_for_tests();
         entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
         let entries = vec![entry];
-        let opts = DisplayOptions {
-            show_header: true,
-            full: false,
-            compact: false,
-        };
-        let mut buffer = Vec::new();
-
-        write_table_with_width(&mut buffer, &entries, &opts, Some(60))
-            .expect("write_table_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let opts = display_options(true, false, false);
+        let output = render_table_output(&entries, &opts, Some(60));
         for line in output.lines() {
             assert!(
                 display_width(line) <= 60,
@@ -757,5 +707,58 @@ mod tests {
             output.contains("…"),
             "narrow table output should truncate oversized cells"
         );
+    }
+
+    #[test]
+    fn write_compact_table_fits_within_requested_terminal_width() {
+        let mut entry = sample_entry_for_tests();
+        entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
+        entry.app = Some("Extremely Verbose Framework Name".into());
+        let entries = vec![entry];
+        let opts = display_options(true, false, true);
+        let output = render_table_output(&entries, &opts, Some(40));
+        for line in output.lines() {
+            assert!(
+                display_width(line) <= 40,
+                "compact table line should fit the requested width: {line}"
+            );
+        }
+        assert!(
+            output.contains("…"),
+            "compact output should truncate oversized cells"
+        );
+    }
+
+    #[test]
+    fn write_table_falls_back_to_compact_when_borders_cannot_fit() {
+        let mut entry = sample_entry_for_tests();
+        entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
+        let entries = vec![entry];
+        let opts = display_options(false, false, false);
+        let output = render_table_output(&entries, &opts, Some(24));
+        for line in output.lines() {
+            assert!(
+                display_width(line) <= 24,
+                "fallback compact line should fit the requested width: {line}"
+            );
+        }
+        assert!(
+            !output.contains('│')
+                && !output.contains('|')
+                && !output.contains('╭')
+                && !output.contains('+'),
+            "very narrow tables should fall back to compact rendering instead of borders"
+        );
+    }
+
+    #[test]
+    fn empty_compact_table_without_header_writes_nothing() {
+        let opts = display_options(false, false, true);
+        let mut buffer = Vec::new();
+
+        write_table_with_width(&mut buffer, &[], &opts, Some(40))
+            .expect("write_table_with_width should succeed");
+
+        assert!(buffer.is_empty(), "empty compact output should stay silent");
     }
 }

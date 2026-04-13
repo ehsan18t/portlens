@@ -162,18 +162,50 @@ mod tests {
         }
     ]"#;
 
+    fn mapped_container(
+        map: &ContainerPortMap,
+        host_ip: Option<IpAddr>,
+        public_port: u16,
+        proto: Protocol,
+    ) -> &ContainerInfo {
+        map.get(&(host_ip, public_port, proto))
+            .expect("expected container port mapping to exist")
+    }
+
+    fn assert_container_mapping(
+        map: &ContainerPortMap,
+        host_ip: Option<IpAddr>,
+        public_port: u16,
+        proto: Protocol,
+        expected_name: &str,
+        expected_image: &str,
+    ) {
+        let info = mapped_container(map, host_ip, public_port, proto);
+        assert_eq!(info.name, expected_name);
+        assert_eq!(info.image, expected_image);
+    }
+
     #[test]
     fn parse_valid_response() {
         let map = parse_containers_json(SAMPLE_RESPONSE);
         assert_eq!(map.len(), 2);
 
-        let pg = map.get(&(None, 5432, Protocol::Tcp)).unwrap();
-        assert_eq!(pg.name, "backend-postgres-1");
-        assert_eq!(pg.image, "postgres:16");
-
-        let redis = map.get(&(None, 6379, Protocol::Tcp)).unwrap();
-        assert_eq!(redis.name, "backend-redis-1");
-        assert_eq!(redis.image, "redis:7-alpine");
+        assert_container_mapping(
+            &map,
+            None,
+            5432,
+            Protocol::Tcp,
+            "backend-postgres-1",
+            "postgres:16",
+        );
+        assert_container_mapping(
+            &map,
+            None,
+            6379,
+            Protocol::Tcp,
+            "backend-redis-1",
+            "redis:7-alpine",
+        );
     }
 
     #[test]
@@ -210,8 +242,14 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
-        assert_eq!(info.name, "my-container");
+        assert_container_mapping(
+            &map,
+            None,
+            80,
+            Protocol::Tcp,
+            "my-container",
+            "nginx:latest",
+        );
     }
 
     #[test]
@@ -253,9 +291,14 @@ mod tests {
         }]"#;
         let map = parse_containers_json(json);
 
-        let info = map.get(&(None, 5432, Protocol::Tcp)).unwrap();
-        assert_eq!(info.name, "ensurily-postgres-dev");
-        assert_eq!(info.image, "docker.io/library/postgres:14-alpine");
+        assert_container_mapping(
+            &map,
+            None,
+            5432,
+            Protocol::Tcp,
+            "ensurily-postgres-dev",
+            "docker.io/library/postgres:14-alpine",
+        );
     }
 
     #[test]
@@ -280,9 +323,9 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
         assert_eq!(
-            info.name, "app:latest",
+            mapped_container(&map, None, 80, Protocol::Tcp).name,
+            "app:latest",
             "containers without names should fall back to their image"
         );
     }
@@ -295,7 +338,7 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
+        let info = mapped_container(&map, None, 80, Protocol::Tcp);
         assert_eq!(
             info.name, "0123456789ab",
             "containers without names or images should fall back to a short id"
@@ -311,6 +354,13 @@ mod tests {
         }]"#;
         let map = parse_containers_json(json);
 
-        assert!(map.contains_key(&(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp,)));
+        assert_container_mapping(
+            &map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
+            "api",
+            "node:22",
+        );
     }
 }

@@ -35,7 +35,7 @@ All arguments (existing and new) are **case-insensitive**: `portview UPDATE`,
 ## Asset Selection
 
 | Platform       | Asset pattern                        | Auto-update? |
-|----------------|--------------------------------------|--------------|
+| -------------- | ------------------------------------ | ------------ |
 | Windows x86_64 | `portview-{tag}-x86_64.exe`          | Yes          |
 | Linux x86_64   | `portview-{tag}-x86_64.tar.gz`       | Yes*         |
 | Linux deb      | detected via `dpkg -S <binary_path>` | No — warn    |
@@ -59,7 +59,7 @@ All arguments (existing and new) are **case-insensitive**: `portview UPDATE`,
 4. Select the correct asset for the current platform
 5. Download asset to a temp file in the same directory as the binary
    (same filesystem guarantees atomic rename)
-6. Verify downloaded size matches `Content-Length` header
+6. Verify the downloaded size matches the GitHub release asset size metadata
 7. **Windows:** rename current binary to `portview.old.exe`, rename temp to
    `portview.exe`, delete `portview.old.exe` (best-effort)
 8. **Linux tar.gz:** extract the `portview` binary from the archive into temp,
@@ -83,20 +83,20 @@ When auto-update is not supported (deb, rpm, unsupported OS), the command:
 
 ## Error Handling
 
-| Scenario                         | Behavior                                          |
-|----------------------------------|---------------------------------------------------|
-| No network / DNS failure         | "Failed to reach GitHub. Check your connection."  |
-| GitHub API 403/429 (rate limit)  | "GitHub API rate limit reached. Try again later." |
-| HTTP non-200                     | "GitHub API returned status {code}."              |
-| JSON parse failure               | "Failed to parse GitHub release data."            |
-| No matching asset in release     | "No compatible binary found. Download manually: {release_url}" |
-| `current_exe()` fails            | "Cannot determine binary path."                   |
-| Permission denied on replace     | "Permission denied. Try running with elevated privileges (sudo / Run as Administrator)." |
-| Content-Length mismatch          | "Download appears corrupt. Aborting update."      |
-| Temp file write failure          | "Failed to write temporary file: {err}"           |
-| Rename failure                   | "Failed to replace binary: {err}"                 |
-| Already up to date               | "portview is already up to date ({version})."     |
-| Tar extraction failure (Linux)   | "Failed to extract update archive: {err}"         |
+| Scenario                        | Behavior                                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------------------- |
+| No network / DNS failure        | "Failed to reach GitHub. Check your connection."                                         |
+| GitHub API 403/429 (rate limit) | "GitHub API rate limit reached. Try again later."                                        |
+| HTTP non-200                    | "GitHub API returned status {code}."                                                     |
+| JSON parse failure              | "Failed to parse GitHub release data."                                                   |
+| No matching asset in release    | "No compatible binary found. Download manually: {release_url}"                           |
+| `current_exe()` fails           | "Cannot determine binary path."                                                          |
+| Permission denied on replace    | "Permission denied. Try running with elevated privileges (sudo / Run as Administrator)." |
+| Asset size mismatch             | "Download appears corrupt. Aborting update."                                             |
+| Temp file write failure         | "Failed to write temporary file: {err}"                                                  |
+| Rename failure                  | "Failed to replace binary: {err}"                                                        |
+| Already up to date              | "portview is already up to date ({version})."                                            |
+| Tar extraction failure (Linux)  | "Failed to extract update archive: {err}"                                                |
 
 ## Case-Insensitive Arguments
 

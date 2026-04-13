@@ -77,7 +77,8 @@ Full view (`portview --full`):
 When stdout is an interactive terminal, portview also prints a small shortcut
 footer to stderr after the table. Redirected and piped stdout stays clean.
 The table renderer now trims wide text columns to fit the current terminal
-width instead of overflowing past the right edge.
+width instead of overflowing past the right edge, and it falls back to the
+compact layout when border overhead alone cannot fit on a narrow terminal.
 
 ---
 
@@ -161,11 +162,11 @@ Default columns:
 
 Additional columns with `--full`:
 
-| Column  | Description                                                                                                             |
-| ------- | ----------------------------------------------------------------------------------------------------------------------- |
-| ADDRESS | Local bind IP address                                                                                                   |
-| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable. On Windows, this may fall back to a SID string instead of an account name        |
+| Column  | Description                                                                                                                        |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| ADDRESS | Local bind IP address                                                                                                              |
+| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, missing or ambiguous non-listener data shows `UNKNOWN`, UDP shows `-` |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, portview prefers the account name and falls back to a SID string when needed    |
 
 ---
 
@@ -178,8 +179,10 @@ Additional columns with `--full`:
 **Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 
 **Terminal-aware layout:** Wide text columns such as `PROJECT` shrink with an
-ellipsis when the current terminal is narrow, and the interactive shortcut
-footer switches between wide and compact layouts based on available width.
+ellipsis when the current terminal is narrow. If the bordered table cannot fit
+cleanly, portview falls back to the compact layout instead of overflowing. The
+interactive shortcut footer also switches between wide and compact layouts
+based on available width.
 
 **Project detection:** Walks upward from a process working directory looking for project markers (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, etc.) to identify the project name.
 
@@ -192,7 +195,7 @@ footer switches between wide and compact layouts based on available width.
 
 **Debug diagnostics:** Set `RUST_LOG=debug` in your shell before running portview to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; portview --all`. This stays off by default.
 
-**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
+**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. When a proxy-owned listener matches multiple distinct containers on the same `port + protocol`, portview now leaves the row unenriched instead of guessing. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
 
 **Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct non-proxy bind addresses on the same port stay visible.
 

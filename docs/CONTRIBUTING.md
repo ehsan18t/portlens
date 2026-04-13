@@ -129,7 +129,9 @@ src/
 Interactive table output also emits a shortcut footer on stderr. Preserve that
 stdout/stderr split when changing display behavior so piped data stays clean.
 Keep the renderer terminal-width aware as well: wide columns should shrink
-cleanly instead of forcing the table past the right edge.
+cleanly instead of forcing the table past the right edge, compact rows must
+still honor the width budget, and the default bordered layout should fall back
+to compact rendering when borders cannot fit.
 
 ---
 
