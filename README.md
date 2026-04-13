@@ -2,7 +2,6 @@
   <img src="assets/icon.png" height="96" alt="PortLens" />
   <h1>PortLens</h1>
   <p><strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong></p>
-  <br>
 
   <a href="https://app.codacy.com/gh/ehsan18t/portlens/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade">
     <img src="https://app.codacy.com/project/badge/Grade/e452100983664ea3a02da32b5c4bb21f" alt="Code Quality" />
