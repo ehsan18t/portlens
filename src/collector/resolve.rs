@@ -78,18 +78,33 @@ fn lookup_container<'a>(
     // Proxy fallback: Docker Desktop Windows publishes ports via proxy
     // processes (wslrelay.exe, com.docker.backend.exe) that bind on a
     // different address than the container. When the port matches AND the
-    // process is a known Docker proxy, try every container mapped to this
-    // port+proto regardless of the published IP.
+    // process is a known Docker proxy, accept the fallback only when every
+    // matching port+proto mapping resolves to the same container. If distinct
+    // containers share the same public port on different host IPs, refusing to
+    // enrich is safer than attributing the row to the wrong service.
     if dedup::is_docker_proxy_process(process_name)
         || exe_name.is_some_and(dedup::is_docker_proxy_process)
     {
-        return container_map
-            .iter()
-            .find(|((_, port, p), _)| *port == socket.port() && *p == proto)
-            .map(|(_, container)| container);
+        return unique_container_for_proxy(container_map, socket.port(), proto);
     }
 
     None
+}
+
+fn unique_container_for_proxy(
+    container_map: &ContainerPortMap,
+    port: u16,
+    proto: Protocol,
+) -> Option<&docker::ContainerInfo> {
+    let mut matches = container_map
+        .iter()
+        .filter(|((_, candidate_port, candidate_proto), _)| {
+            *candidate_port == port && *candidate_proto == proto
+        })
+        .map(|(_, container)| container);
+
+    let first = matches.next()?;
+    matches.all(|candidate| candidate == first).then_some(first)
 }
 
 #[cfg(target_os = "linux")]
@@ -275,6 +290,72 @@ mod tests {
             Some("wslrelay.exe"),
         );
         assert_eq!(container.map(|info| info.name.as_str()), Some("web"));
+    }
+
+    #[test]
+    fn container_lookup_refuses_ambiguous_proxy_matches() {
+        let mut map = HashMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            docker::ContainerInfo {
+                name: "api-a".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+        map.insert(
+            (
+                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                8080,
+                Protocol::Tcp,
+            ),
+            docker::ContainerInfo {
+                name: "api-b".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let container = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 8080),
+            Protocol::Tcp,
+            "wslrelay.exe",
+            None,
+        );
+        assert!(
+            container.is_none(),
+            "proxy fallback should not guess when multiple distinct containers share the same port"
+        );
+    }
+
+    #[test]
+    fn container_lookup_keeps_proxy_fallback_when_all_matches_agree() {
+        let mut map = HashMap::new();
+        let container_info = docker::ContainerInfo {
+            name: "shared-api".to_string(),
+            image: "node:22".to_string(),
+        };
+
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            container_info.clone(),
+        );
+        map.insert(
+            (
+                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                8080,
+                Protocol::Tcp,
+            ),
+            container_info,
+        );
+
+        let container = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 8080),
+            Protocol::Tcp,
+            "wslrelay.exe",
+            None,
+        );
+        assert_eq!(container.map(|info| info.name.as_str()), Some("shared-api"));
     }
 
     #[test]
