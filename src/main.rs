@@ -126,13 +126,19 @@ fn normalize_args() -> Vec<OsString> {
 
 /// Parse CLI arguments into a [`Cli`] struct.
 ///
-/// Subcommands are detected by scanning for the literal token `update`;
-/// anything after it is consumed by the subcommand parser.
+/// Subcommands are detected by scanning for the first occurrence of a known
+/// subcommand token (`update`, `kill`); anything after the token is consumed
+/// by the matching subcommand parser. The earliest-occurring token wins so
+/// that `portlens kill update` is parsed as `kill` with a stray `update`
+/// argument (a usage error), not as `update` with a stray `kill` argument.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
-    let update_idx = args.iter().position(|a| a == "update");
-    let kill_idx = args.iter().position(|a| a == "kill");
+    let subcommand_idx = args
+        .iter()
+        .position(|a| matches!(a.to_str(), Some("update" | "kill")));
 
-    let (main_args, command) = if let Some(idx) = update_idx {
+    let (main_args, command) = if let Some(idx) = subcommand_idx
+        && args[idx] == "update"
+    {
         let main: Vec<OsString> = args[..idx].to_vec();
         let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
 
@@ -143,7 +149,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             bail!("unexpected arguments for 'update' subcommand: {remaining:?}");
         }
         (main, Some(Command::Update { check }))
-    } else if let Some(idx) = kill_idx {
+    } else if let Some(idx) = subcommand_idx {
+        // Must be "kill" (the only other value the scan accepts).
         let main: Vec<OsString> = args[..idx].to_vec();
         let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
 
