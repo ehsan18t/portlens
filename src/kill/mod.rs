@@ -134,16 +134,29 @@ fn announce_dry_run(targets: &[Target], opts: &KillOptions) -> Result<()> {
     }
 
     let mut out = std::io::stdout().lock();
-    let kind = if opts.force {
-        "SIGKILL/terminate"
-    } else {
-        "graceful"
-    };
+    let kind = dry_run_kind(opts.force);
     writeln!(out, "dry-run: would {kind} {} process(es):", targets.len())?;
     for t in targets {
         writeln!(out, "  pid {} ({})", t.pid, t.process)?;
     }
     Ok(())
+}
+
+const fn dry_run_kind(force: bool) -> &'static str {
+    #[cfg(windows)]
+    {
+        let _ = force;
+        "terminate"
+    }
+
+    #[cfg(not(windows))]
+    {
+        if force {
+            "SIGKILL/terminate"
+        } else {
+            "graceful"
+        }
+    }
 }
 
 fn dry_run_report(targets: &[Target], force: bool) -> Vec<KillReportEntry> {
@@ -155,11 +168,7 @@ fn dry_run_report(targets: &[Target], force: bool) -> Vec<KillReportEntry> {
 
 fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
     let mut err = std::io::stderr().lock();
-    let verb = if opts.force {
-        "forcefully kill"
-    } else {
-        "kill"
-    };
+    let verb = confirmation_verb(opts.force);
     writeln!(err, "about to {verb} {} process(es):", targets.len())?;
     for t in targets {
         writeln!(err, "  pid {} ({})", t.pid, t.process)?;
@@ -174,6 +183,19 @@ fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
         line.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+const fn confirmation_verb(force: bool) -> &'static str {
+    #[cfg(windows)]
+    {
+        let _ = force;
+        "terminate"
+    }
+
+    #[cfg(not(windows))]
+    {
+        if force { "forcefully kill" } else { "kill" }
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +225,35 @@ mod tests {
         let report = dry_run_report(&targets, true);
 
         assert_eq!(report[0].status, "would-force-kill");
+    }
+
+    #[test]
+    fn dry_run_wording_matches_platform_semantics() {
+        #[cfg(windows)]
+        {
+            assert_eq!(dry_run_kind(false), "terminate");
+            assert_eq!(dry_run_kind(true), "terminate");
+        }
+
+        #[cfg(not(windows))]
+        {
+            assert_eq!(dry_run_kind(false), "graceful");
+            assert_eq!(dry_run_kind(true), "SIGKILL/terminate");
+        }
+    }
+
+    #[test]
+    fn confirmation_wording_matches_platform_semantics() {
+        #[cfg(windows)]
+        {
+            assert_eq!(confirmation_verb(false), "terminate");
+            assert_eq!(confirmation_verb(true), "terminate");
+        }
+
+        #[cfg(not(windows))]
+        {
+            assert_eq!(confirmation_verb(false), "kill");
+            assert_eq!(confirmation_verb(true), "forcefully kill");
+        }
     }
 }
