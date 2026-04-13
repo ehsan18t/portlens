@@ -1,4 +1,4 @@
-# portview - Software Requirements Specification
+# PortLens - Software Requirements Specification
 
 **Version:** 1.0
 **Date:** April 2026
@@ -26,11 +26,11 @@
 
 ### 1.1 Purpose
 
-This document defines the software requirements for portview, a cross-platform command-line utility that lists open network ports and their associated processes. It serves as the reference for what the application must do, how it should behave, and which technologies it relies on.
+This document defines the software requirements for PortLens, a cross-platform command-line utility that lists open network ports and their associated processes. It serves as the reference for what the application must do, how it should behave, and which technologies it relies on.
 
 ### 1.2 Product Overview
 
-portview is a single-binary CLI tool written in Rust. When executed, it collects information about all open TCP and UDP sockets on the host system, resolves the owning process for each socket, and prints a formatted table to standard output. The tool then exits. It targets developers, system administrators, and power users who need a fast and readable alternative to platform-native utilities like netstat or ss.
+PortLens is a single-binary CLI tool written in Rust. When executed, it collects information about all open TCP and UDP sockets on the host system, resolves the owning process for each socket, and prints a formatted table to standard output. The tool then exits. It targets developers, system administrators, and power users who need a fast and readable alternative to platform-native utilities like netstat or ss.
 
 ### 1.3 Scope
 
@@ -65,7 +65,7 @@ portview is a single-binary CLI tool written in Rust. When executed, it collects
 
 ### 2.1 Default Behavior
 
-When invoked with no arguments, portview must:
+When invoked with no arguments, PortLens must:
 
 - Collect all open TCP and UDP sockets on the system, both IPv4 and IPv6
 - For each socket, resolve: local address and port, protocol (TCP or UDP), connection state, PID, process name, and owning username
@@ -125,7 +125,7 @@ All flags are combinable unless noted otherwise.
 
 ### 2.4 Permissions and Graceful Degradation
 
-portview must run without requiring elevated privileges. However, certain socket-to-process associations may be inaccessible for sockets owned by other users or system accounts. The tool must handle this gracefully:
+PortLens must run without requiring elevated privileges. However, certain socket-to-process associations may be inaccessible for sockets owned by other users or system accounts. The tool must handle this gracefully:
 
 - If a PID cannot be resolved due to permission restrictions, the PID column displays a placeholder and PROCESS displays "restricted"
 - If a username cannot be resolved, the USER column displays a placeholder
@@ -201,7 +201,7 @@ The application is written entirely in Rust on the stable toolchain. The minimum
 ### 4.4 Project Structure
 
 ```
-portview/
+portlens/
 ├── src/
 │   ├── main.rs        # Entry point. Parses CLI args, calls collector, applies filters, renders output
 │   ├── types.rs       # PortEntry struct shared across all modules
@@ -248,11 +248,11 @@ display.rs  --> stdout (table or JSON)
 
 - Linux kernel 4.0 or later is assumed, which guarantees availability of /proc/net/tcp and /proc/net/udp
 - Windows 10 or later is assumed, which guarantees availability of GetExtendedTcpTable and GetExtendedUdpTable
-- The user running portview has at minimum read access to their own process entries. Full visibility across all processes requires elevated privileges but is not required for the tool to function
+- The user running PortLens has at minimum read access to their own process entries. Full visibility across all processes requires elevated privileges but is not required for the tool to function
 
 ### 5.3 Known Limitations
 
-- Sockets owned by other users, including root-owned services, will appear as restricted unless portview is run with administrator or sudo privileges
+- Sockets owned by other users, including root-owned services, will appear as restricted unless PortLens is run with administrator or sudo privileges
 - UDP sockets do not have a meaningful connection state, so the STATE column will always display a placeholder for UDP entries
 - The --listen flag filters by TCP LISTEN state only. UDP has no equivalent concept and will be excluded when this flag is used
 
@@ -264,11 +264,11 @@ The following features are noted for potential future versions and are not part 
 
 | Feature                    | Notes                                                                                                                                                                                           |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| --watch live mode          | Auto-refreshing output at a configurable interval, similar to running watch -n1 portview                                                                                                        |
+| --watch live mode          | Auto-refreshing output at a configurable interval, similar to running watch -n1 portlens                                                                                                        |
 | TUI interface              | An interactive terminal UI built with ratatui, with keyboard navigation and inline filtering                                                                                                    |
 | macOS support              | The listeners crate already supports macOS, so adding it to the target matrix would be straightforward                                                                                          |
 | --sort flag                | Allow sorting by columns other than port number, such as by PID or process name                                                                                                                 |
 | Well-known port labels     | An optional annotation column showing the common service name for known ports, for example 22 as SSH or 443 as HTTPS                                                                            |
 | Package manager publishing | Publishing to Homebrew, winget, and popular Linux package repositories such as the AUR                                                                                                          |
-| Custom framework rules     | A user config file (e.g. ~/.config/portview/frameworks.toml) allowing custom detection rules that map process names, config files, or Docker images to app labels without modifying source code |
+| Custom framework rules     | A user config file (e.g. ~/.config/portlens/frameworks.toml) allowing custom detection rules that map process names, config files, or Docker images to app labels without modifying source code |
 

@@ -1,4 +1,4 @@
-# portview — CI Pipeline
+# PortLens - CI Pipeline
 # Enforces code quality on pull requests. All checks must pass before merging.
 #
 # Gates (ALL must pass):
@@ -82,10 +82,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
-          name: portview-${{ matrix.os }}-${{ github.sha }}
+          name: portlens-${{ matrix.os }}-${{ github.sha }}
           path: |
-            target/debug/portview
-            target/debug/portview.exe
+            target/debug/portlens
+            target/debug/portlens.exe
           retention-days: 7
           if-no-files-found: warn
 

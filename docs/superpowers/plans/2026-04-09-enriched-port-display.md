@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add project detection, app/framework identification, Docker/Podman container awareness, uptime tracking, smart default filtering, and display mode options to portview.
+**Goal:** Add project detection, app/framework identification, Docker/Podman container awareness, uptime tracking, smart default filtering, and display mode options to PortLens.
 
 **Architecture:** Three new modules (docker, project, framework) feed enrichment data into the existing collector. The collector builds enriched `PortEntry` structs, the filter applies a new relevance filter (default on), and the display renders bordered/compact tables with column selection. Docker detection uses raw HTTP over Unix socket / named pipe with zero new dependencies.
 
@@ -14,18 +14,18 @@
 
 ## File Structure
 
-| Action | Path | Responsibility |
-|--------|------|----------------|
-| Modify | `src/types.rs` | Add `project`, `app`, `uptime_secs` fields to `PortEntry` |
-| Create | `src/docker.rs` | Docker/Podman socket API, container-to-port mapping |
-| Create | `src/project.rs` | Project root detection via marker file walk + cmd fallback |
-| Create | `src/framework.rs` | App detection: Docker image, config files, process name |
-| Modify | `src/collector.rs` | Integrate enrichment, expand ProcessRefreshKind |
-| Modify | `src/filter.rs` | Add relevance filter with `show_all` bypass |
-| Modify | `src/display.rs` | Bordered/compact table, column selection, uptime formatting |
-| Modify | `src/main.rs` | Add `--all`, `--full`, `--compact` CLI flags |
-| Modify | `src/lib.rs` | Export new modules |
-| Modify | `benches/benchmarks.rs` | Update PortEntry construction with new fields |
+| Action | Path                    | Responsibility                                              |
+| ------ | ----------------------- | ----------------------------------------------------------- |
+| Modify | `src/types.rs`          | Add `project`, `app`, `uptime_secs` fields to `PortEntry`   |
+| Create | `src/docker.rs`         | Docker/Podman socket API, container-to-port mapping         |
+| Create | `src/project.rs`        | Project root detection via marker file walk + cmd fallback  |
+| Create | `src/framework.rs`      | App detection: Docker image, config files, process name     |
+| Modify | `src/collector.rs`      | Integrate enrichment, expand ProcessRefreshKind             |
+| Modify | `src/filter.rs`         | Add relevance filter with `show_all` bypass                 |
+| Modify | `src/display.rs`        | Bordered/compact table, column selection, uptime formatting |
+| Modify | `src/main.rs`           | Add `--all`, `--full`, `--compact` CLI flags                |
+| Modify | `src/lib.rs`            | Export new modules                                          |
+| Modify | `benches/benchmarks.rs` | Update PortEntry construction with new fields               |
 
 ---
 
@@ -984,7 +984,7 @@ git commit -m "feat(framework): add app detection from Docker images, config fil
 - [ ] **Step 1: Add new module exports**
 
 ```rust
-//! # portview
+//! # PortLens
 //!
 //! A cross-platform CLI tool that lists open network ports and their associated
 //! processes. Provides a fast, readable alternative to `netstat` and `ss`.

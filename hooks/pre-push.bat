@@ -1,5 +1,5 @@
 @echo off
-REM portview — Pre-push hook (Windows batch version)
+REM PortLens - Pre-push hook (Windows batch version)
 REM Runs the full quality gate before pushing to remote.
 REM This mirrors the CI checks so issues are caught locally before a PR.
 REM
@@ -7,7 +7,7 @@ REM Install: copy this file to .git\hooks\pre-push
 REM          (remove the .bat extension when copying)
 
 echo ======================================
-echo   portview Pre-Push Quality Gate
+echo   PortLens Pre-Push Quality Gate
 echo ======================================
 echo.
 

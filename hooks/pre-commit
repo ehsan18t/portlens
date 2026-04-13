@@ -1,5 +1,5 @@
 #!/bin/sh
-# portview — Pre-commit hook
+# PortLens - Pre-commit hook
 # Prevents committing code that doesn't pass quality gates.
 #
 # Install: copy this file to .git/hooks/pre-commit (or run the setup script)
@@ -42,7 +42,7 @@ ensure_cargo() {
 ensure_cargo
 
 echo "╔══════════════════════════════════════════╗"
-echo "║     portview Pre-Commit Quality Gate      ║"
+echo "║     PortLens Pre-Commit Quality Gate      ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 

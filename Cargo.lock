@@ -492,7 +492,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "portview"
+name = "portlens"
 version = "0.1.0"
 dependencies = [
  "anyhow",

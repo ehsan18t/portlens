@@ -1,5 +1,5 @@
 @echo off
-REM portview — Commit message validation hook (Windows batch version)
+REM PortLens - Commit message validation hook (Windows batch version)
 REM Enforces Conventional Commits format.
 REM
 REM Install: copy to .git\hooks\commit-msg (remove .bat extension)

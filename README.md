@@ -1,49 +1,61 @@
-# portview
+<div align="center">
+  <img src="assets/icon.png" height="96" alt="PortLens" />
+  <h1>PortLens</h1>
+  <p><strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong></p>
 
-**A cross-platform CLI tool that lists open network ports and their associated processes.**
+  <a href="https://app.codacy.com/gh/ehsan18t/portlens/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade">
+    <img src="https://app.codacy.com/project/badge/Grade/e452100983664ea3a02da32b5c4bb21f" alt="Code Quality" />
+  </a>
+  <a href="https://github.com/ehsan18t/portlens/releases/latest">
+    <img src="https://img.shields.io/github/v/tag/ehsan18t/portlens?color=blue&label=Release" alt="Release" />
+  </a>
+  <a href="https://github.com/ehsan18t/portlens/releases">
+    <img src="https://img.shields.io/github/downloads/ehsan18t/portlens/total?label=Downloads&color=brightgreen" alt="Downloads" />
+  </a>
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-informational" alt="Platform" />
+  <img src="https://img.shields.io/badge/License-MIT-success" alt="License" />
+</div>
+</br>
 
-A fast, readable alternative to `netstat` and `ss`. Single binary with no external tool dependencies, works on Linux and Windows.
-
----
 
 ## Quick Start
 
 ```bash
 # Show developer-relevant ports (default smart filter)
-portview
+portlens
 
 # Show all open ports
-portview --all
+portlens --all
 
 # Show all columns (adds STATE, USER)
-portview --full
+portlens --full
 
 # Compact borderless table
-portview --compact
+portlens --compact
 
 # TCP only
-portview --tcp
+portlens --tcp
 
 # UDP only
-portview --udp
+portlens --udp
 
 # Only listening sockets
-portview --listen
+portlens --listen
 
 # Filter to a specific port
-portview --port 8080
+portlens --port 8080
 
 # Disable Docker/Podman and project-root enrichment
-portview --no-enrich
+portlens --no-enrich
 
 # Lowest-overhead raw view
-portview --all --no-enrich
+portlens --all --no-enrich
 
 # JSON output
-portview --json
+portlens --json
 
 # No header (for piping)
-portview --no-header
+portlens --no-header
 ```
 
 ---
@@ -63,7 +75,7 @@ Default view (developer-relevant ports with enrichment):
 ╰───────┴───────┴───────────┴──────────┴──────┴────────────────────┴────────────┴────────╯
 ```
 
-Full view (`portview --full`):
+Full view (`portlens --full`):
 
 ```
 ╭───────┬───────┬───────────┬────────┬──────────┬──────┬──────────┬────────────────────┬────────────┬────────╮
@@ -74,7 +86,7 @@ Full view (`portview --full`):
 ╰───────┴───────┴───────────┴────────┴──────────┴──────┴──────────┴────────────────────┴────────────┴────────╯
 ```
 
-When stdout is an interactive terminal, portview also prints a small shortcut
+When stdout is an interactive terminal, PortLens also prints a small shortcut
 footer to stderr after the table. Redirected and piped stdout stays clean.
 The table renderer now trims wide text columns to fit the current terminal
 width instead of overflowing past the right edge, and it falls back to the
@@ -86,25 +98,25 @@ compact layout when border overhead alone cannot fit on a narrow terminal.
 
 ### Option A: Download Pre-built Binary
 
-Download the latest release from the [Releases](https://github.com/ehsan18t/portview/releases) page.
+Download the latest release from the [Releases](https://github.com/ehsan18t/portlens/releases) page.
 
 | Platform            | Package                            |
 | ------------------- | ---------------------------------- |
-| Linux x86-64        | `portview-<version>-x86_64.tar.gz` |
-| Linux x86-64 (.deb) | `portview-<version>-amd64.deb`     |
-| Linux x86-64 (.rpm) | `portview-<version>-x86_64.rpm`    |
-| Windows x86-64      | `portview-<version>-x86_64.exe`    |
+| Linux x86-64        | `portlens-<version>-x86_64.tar.gz` |
+| Linux x86-64 (.deb) | `portlens-<version>-amd64.deb`     |
+| Linux x86-64 (.rpm) | `portlens-<version>-x86_64.rpm`    |
+| Windows x86-64      | `portlens-<version>-x86_64.exe`    |
 
-For Debian/Ubuntu: `sudo dpkg -i portview-<version>-amd64.deb`
-For Fedora/RHEL: `sudo rpm -i portview-<version>-x86_64.rpm`
+For Debian/Ubuntu: `sudo dpkg -i portlens-<version>-amd64.deb`
+For Fedora/RHEL: `sudo rpm -i portlens-<version>-x86_64.rpm`
 
 ### Option B: Build from Source
 
 ```bash
-git clone https://github.com/ehsan18t/portview.git
-cd portview
+git clone https://github.com/ehsan18t/portlens.git
+cd portlens
 cargo build --release
-# Binary is at: target/release/portview (or portview.exe on Windows)
+# Binary is at: target/release/portlens (or portlens.exe on Windows)
 ```
 
 Release builds use a size-focused profile (`opt-level = "z"`, LTO, symbol
@@ -119,7 +131,7 @@ images so Windows can select the best size for Explorer and shell views.
 ### Option C: Install via Cargo
 
 ```bash
-cargo install portview
+cargo install portlens
 ```
 
 ---
@@ -166,13 +178,13 @@ Additional columns with `--full`:
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | ADDRESS | Local bind IP address                                                                                                              |
 | STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, missing or ambiguous non-listener data shows `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable. On Windows, portview prefers the account name and falls back to a SID string when needed    |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, PortLens prefers the account name and falls back to a SID string when needed    |
 
 ---
 
 ## Smart Features
 
-**Developer-relevant filter:** By default, portview only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
+**Developer-relevant filter:** By default, PortLens only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
 
 **Explicit port queries:** `--port <num>` always shows matching sockets even when the owning process is not recognized as developer-relevant.
 
@@ -180,7 +192,7 @@ Additional columns with `--full`:
 
 **Terminal-aware layout:** Wide text columns such as `PROJECT` shrink with an
 ellipsis when the current terminal is narrow. If the bordered table cannot fit
-cleanly, portview falls back to the compact layout instead of overflowing. The
+cleanly, PortLens falls back to the compact layout instead of overflowing. The
 interactive shortcut footer also switches between wide and compact layouts
 based on available width.
 
@@ -193,9 +205,9 @@ based on available width.
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
 
-**Debug diagnostics:** Set `RUST_LOG=debug` in your shell before running portview to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; portview --all`. This stays off by default.
+**Debug diagnostics:** Set `RUST_LOG=debug` in your shell before running PortLens to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; portlens --all`. This stays off by default.
 
-**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. When a proxy-owned listener matches multiple distinct containers on the same `port + protocol`, portview now leaves the row unenriched instead of guessing. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
+**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. When a proxy-owned listener matches multiple distinct containers on the same `port + protocol`, PortLens now leaves the row unenriched instead of guessing. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
 
 **Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct non-proxy bind addresses on the same port stay visible.
 
@@ -203,9 +215,9 @@ based on available width.
 
 ## Permissions
 
-portview runs without elevated privileges. Some sockets owned by other users or system processes may not appear in the output. Run with `sudo` (Linux) or as Administrator (Windows) for full visibility.
+PortLens runs without elevated privileges. Some sockets owned by other users or system processes may not appear in the output. Run with `sudo` (Linux) or as Administrator (Windows) for full visibility.
 
-When stderr is attached to a terminal, portview warns at runtime if it detects that the current session is not elevated.
+When stderr is attached to a terminal, PortLens warns at runtime if it detects that the current session is not elevated.
 
 Deep enrichment may inspect executable paths, working directories, and absolute command-line paths to infer project roots. Use `--no-enrich` if you want to skip that extra metadata collection.
 

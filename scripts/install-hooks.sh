@@ -1,5 +1,5 @@
 #!/bin/sh
-# portview - Install git hooks
+# PortLens - Install git hooks
 # Run once after cloning: ./scripts/install-hooks.sh
 
 set -e
@@ -27,7 +27,7 @@ install_hook() {
 }
 
 echo ""
-echo "Installing portview git hooks..."
+echo "Installing PortLens git hooks..."
 echo ""
 
 install_hook "pre-commit"

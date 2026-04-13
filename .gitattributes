@@ -1,4 +1,4 @@
-# portview — Git attributes
+# PortLens - Git attributes
 #
 # Normalise all text files to LF in the repository.
 # On checkout: LF everywhere except Windows-native script types (.bat, .cmd,

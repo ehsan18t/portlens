@@ -1,4 +1,4 @@
-# portview — rustfmt configuration
+# PortLens - rustfmt configuration
 # Enforces consistent formatting across all contributors and AI agents.
 # Run: cargo fmt --check (CI) or cargo fmt (auto-fix)
 

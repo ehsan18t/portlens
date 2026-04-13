@@ -1,11 +1,11 @@
 name: Feature Request
-description: Suggest a new feature or improvement for portview
+description: Suggest a new feature or improvement for PortLens
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Have an idea to make portview better? Describe it below!
+        Have an idea to make PortLens better? Describe it below!
 
   - type: textarea
     id: problem

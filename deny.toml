@@ -1,4 +1,4 @@
-# portview — cargo-deny configuration
+# PortLens - cargo-deny configuration
 # Audits dependencies for security vulnerabilities, license issues, and bans.
 # Run: cargo deny check
 # Install: cargo install cargo-deny

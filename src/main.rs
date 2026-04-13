@@ -1,4 +1,4 @@
-//! # portview - entry point
+//! # `PortLens` - entry point
 //!
 //! Parses CLI arguments, collects socket data, applies filters, and renders
 //! output to stdout.
@@ -8,7 +8,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use portview::{collector, display, filter};
+use portlens::{collector, display, filter};
 
 /// Exit code for runtime errors (failed to enumerate sockets, write errors).
 const EXIT_RUNTIME_ERROR: u8 = 1;
@@ -69,7 +69,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("error: {e:#}");
             eprintln!();
-            eprintln!("Try 'portview --help' for more information.");
+            eprintln!("Try 'portlens --help' for more information.");
             return ExitCode::from(EXIT_USAGE_ERROR);
         }
     };
@@ -92,7 +92,7 @@ fn init_logger() {
 /// Normalize CLI arguments to lowercase for case-insensitive matching.
 ///
 /// Skips argv\[0\] (the program name/path) and returns the rest lowercased.
-/// Safe because portview has no string-valued arguments — only numeric
+/// Safe because `PortLens` has no string-valued arguments - only numeric
 /// port values, flags, and subcommand names, none of which are affected
 /// by lowercasing.
 fn normalize_args() -> Vec<OsString> {
@@ -174,10 +174,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("portview {version}");
+    println!("PortLens {version}");
     println!("List open network ports and their associated processes.");
     println!();
-    println!("Usage: portview [OPTIONS] [COMMAND]");
+    println!("Usage: portlens [OPTIONS] [COMMAND]");
     println!();
     println!("Commands:");
     println!("  update  Check for updates and optionally self-update the binary");
@@ -201,7 +201,7 @@ fn print_help() {
 }
 
 fn print_version() {
-    println!("portview {}", env!("CARGO_PKG_VERSION"));
+    println!("PortLens {}", env!("CARGO_PKG_VERSION"));
 }
 
 /// Application entry point, separated from `main()` for testability.
@@ -209,7 +209,7 @@ fn run(cli: Cli) -> Result<()> {
     // Dispatch to subcommand if present
     if let Some(command) = cli.command {
         return match command {
-            Command::Update { check } => portview::update::run(check),
+            Command::Update { check } => portlens::update::run(check),
         };
     }
 

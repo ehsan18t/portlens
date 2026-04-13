@@ -1,12 +1,12 @@
 @echo off
-REM portview — Pre-commit hook (Windows batch version)
+REM PortLens - Pre-commit hook (Windows batch version)
 REM Prevents committing code that doesn't pass quality gates.
 REM
 REM Install: copy this file to .git\hooks\pre-commit
 REM          (remove the .bat extension when copying)
 
 echo ======================================
-echo   portview Pre-Commit Quality Gate
+echo   PortLens Pre-Commit Quality Gate
 echo ======================================
 echo.
 
