@@ -125,23 +125,35 @@ fn matches_process_name(process: &str, filter: &str) -> bool {
 /// any `.exe` suffix). The filter value is already lowercased by the CLI
 /// normalizer, so only the process bytes need per-character lowering.
 ///
-/// Uses a byte-window scan to avoid heap-allocating a lowercased copy of
-/// the process name on every call.
+/// Optimizations over a naive `to_ascii_lowercase().contains()`:
+///
+/// 1. **Zero heap allocation** - operates on raw byte slices.
+/// 2. **Length guard** - returns immediately when the pattern is longer
+///    than the process name.
+/// 3. **First-byte pre-check** - skips ~96% of window positions by
+///    checking if the first byte matches before comparing the rest.
+///    For ASCII data the first byte matches with probability ~1/26,
+///    avoiding the inner loop for most positions.
 fn contains_process_pattern(process: &str, pattern: &str) -> bool {
     let pattern_bytes = pattern.as_bytes();
     if pattern_bytes.is_empty() {
         return true;
     }
 
-    process
-        .as_bytes()
-        .windows(pattern_bytes.len())
-        .any(|window| {
-            window
+    let process_bytes = process.as_bytes();
+    if process_bytes.len() < pattern_bytes.len() {
+        return false;
+    }
+
+    let first = pattern_bytes[0];
+
+    process_bytes.windows(pattern_bytes.len()).any(|window| {
+        window[0].to_ascii_lowercase() == first
+            && window[1..]
                 .iter()
-                .zip(pattern_bytes)
+                .zip(&pattern_bytes[1..])
                 .all(|(a, b)| a.to_ascii_lowercase() == *b)
-        })
+    })
 }
 
 /// Apply the given filter options to a collection of entries.

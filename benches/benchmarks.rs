@@ -122,6 +122,82 @@ fn bench_filter(c: &mut Criterion) {
     });
 }
 
+fn bench_filter_string(c: &mut Criterion) {
+    let entries = synthetic_entries(500);
+
+    // --process: exact name match (single hit out of 500)
+    let process_filter = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        process: Some("proc_250".to_string()),
+        grep: None,
+        show_all: true,
+    };
+    c.bench_function("filter_process_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &process_filter),
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --grep: substring match (all 500 entries contain "proc_")
+    let grep_broad = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        process: None,
+        grep: Some("proc_".to_string()),
+        show_all: true,
+    };
+    c.bench_function("filter_grep_broad_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &grep_broad),
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --grep: narrow substring match (~11 hits out of 500)
+    let grep_narrow = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        process: None,
+        grep: Some("proc_25".to_string()),
+        show_all: true,
+    };
+    c.bench_function("filter_grep_narrow_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &grep_narrow),
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --grep + --tcp: combined string and protocol filter
+    let grep_tcp = FilterOptions {
+        tcp_only: true,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        process: None,
+        grep: Some("proc_25".to_string()),
+        show_all: true,
+    };
+    c.bench_function("filter_grep_tcp_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &grep_tcp),
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_docker_parse(c: &mut Criterion) {
     let json = r#"[
         {"Names":["/pg"],"Image":"postgres:16","Ports":[
@@ -140,5 +216,10 @@ fn bench_docker_parse(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_filter, bench_docker_parse);
+criterion_group!(
+    benches,
+    bench_filter,
+    bench_filter_string,
+    bench_docker_parse
+);
 criterion_main!(benches);
