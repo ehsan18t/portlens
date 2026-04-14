@@ -471,30 +471,6 @@ pub fn detect_from_process(process_name: &str) -> Option<AppLabel> {
         .map(|(_, label)| Cow::Borrowed(*label))
 }
 
-/// Detect the app label for a port entry using all available information.
-///
-/// Priority: Docker image > config file > process name.
-#[must_use]
-pub fn detect(
-    container: Option<&ContainerInfo>,
-    project_root: Option<&Path>,
-    process_name: &str,
-) -> Option<AppLabel> {
-    if let Some(info) = container
-        && let Some(label) = detect_from_image(info)
-    {
-        return Some(label);
-    }
-
-    if let Some(root) = project_root
-        && let Some(label) = detect_from_config(root)
-    {
-        return Some(label);
-    }
-
-    detect_from_process(process_name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,38 +810,5 @@ mod tests {
             Some("PostgreSQL")
         );
         assert_eq!(detect_from_process("Node").as_deref(), Some("Node.js"));
-    }
-
-    #[test]
-    fn combined_docker_wins_over_config() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
-        let info = ContainerInfo {
-            id: String::new(),
-            name: "db".to_string(),
-            image: "postgres:16".to_string(),
-        };
-        let result = detect(Some(&info), Some(dir.path()), "node");
-        assert_eq!(result.as_deref(), Some("PostgreSQL"));
-    }
-
-    #[test]
-    fn combined_config_wins_over_process() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("next.config.js"), "").unwrap();
-        let result = detect(None, Some(dir.path()), "node");
-        assert_eq!(result.as_deref(), Some("Next.js"));
-    }
-
-    #[test]
-    fn combined_falls_through_to_process() {
-        let result = detect(None, None, "postgres");
-        assert_eq!(result.as_deref(), Some("PostgreSQL"));
-    }
-
-    #[test]
-    fn combined_all_none() {
-        let result = detect(None, None, "svchost");
-        assert!(result.is_none());
     }
 }
