@@ -227,49 +227,43 @@ fn send_http_request_windows(
     let mut chunk = [0_u8; 8192];
     let mut headers: Option<http::ParsedHeaders> = None;
 
-    loop {
-        // Once headers are parsed, continue extracting against the
-        // buffered body instead of reparsing the header boundary.
-        if let Some(ref hdr) = headers {
-            match http::extract_http_body_from_buffer(&response, hdr, false) {
-                Ok(Some(body)) => return Some(body),
-                Ok(None) => {}
-                Err(()) => return None,
+    poll_named_pipe_response(
+        stream,
+        deadline,
+        &mut chunk,
+        &mut response,
+        |response, eof| {
+            if eof {
+                return http::extract_body_at_eof(response, headers.as_ref())
+                    .map_or(PipeParseState::Failed, PipeParseState::Done);
             }
-        } else if let Some(hdr) = http::parse_response_headers(&response) {
+            // Once headers are parsed, continue extracting against the buffered
+            // body instead of reparsing the header boundary.
+            if let Some(ref hdr) = headers {
+                return match http::extract_http_body_from_buffer(response, hdr, eof) {
+                    Ok(Some(body)) => PipeParseState::Done(body),
+                    Ok(None) => PipeParseState::Pending,
+                    Err(()) => PipeParseState::Failed,
+                };
+            }
+
+            let Some(hdr) = http::parse_response_headers(response) else {
+                return PipeParseState::Pending;
+            };
             if !hdr.status_ok {
-                return None;
+                return PipeParseState::Failed;
             }
-            match http::extract_http_body_from_buffer(&response, &hdr, false) {
-                Ok(Some(body)) => return Some(body),
-                Ok(None) => {}
-                Err(()) => return None,
-            }
-            headers = Some(hdr);
-        }
 
-        let available = match peek_available_bytes(stream) {
-            Some(available) => available,
-            None if last_os_error_is(ERROR_BROKEN_PIPE) => {
-                return http::extract_body_at_eof(&response, headers.as_ref());
+            match http::extract_http_body_from_buffer(response, &hdr, eof) {
+                Ok(Some(body)) => PipeParseState::Done(body),
+                Ok(None) => {
+                    headers = Some(hdr);
+                    PipeParseState::Pending
+                }
+                Err(()) => PipeParseState::Failed,
             }
-            None => return None,
-        };
-
-        if available == 0 {
-            if std::time::Instant::now() >= deadline {
-                return http::extract_body_at_eof(&response, headers.as_ref());
-            }
-            std::thread::sleep(PIPE_POLL_INTERVAL);
-            continue;
-        }
-
-        match read_named_pipe_bytes(stream, available, &mut chunk, &mut response) {
-            PipeReadResult::Continue => {}
-            PipeReadResult::Eof => return http::extract_body_at_eof(&response, headers.as_ref()),
-            PipeReadResult::Failed => return None,
-        }
-    }
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -301,6 +295,66 @@ enum PipeReadResult {
     Continue,
     Eof,
     Failed,
+}
+
+#[cfg(windows)]
+enum PipeParseState<T> {
+    Pending,
+    Done(T),
+    Failed,
+}
+
+#[cfg(windows)]
+fn poll_named_pipe_response<T, F>(
+    stream: &mut std::fs::File,
+    deadline: std::time::Instant,
+    chunk: &mut [u8],
+    response: &mut Vec<u8>,
+    mut parse: F,
+) -> Option<T>
+where
+    F: FnMut(&[u8], bool) -> PipeParseState<T>,
+{
+    loop {
+        match parse(response, false) {
+            PipeParseState::Pending => {}
+            PipeParseState::Done(value) => return Some(value),
+            PipeParseState::Failed => return None,
+        }
+
+        let available = match peek_available_bytes(stream) {
+            Some(available) => available,
+            None if last_os_error_is(ERROR_BROKEN_PIPE) => {
+                return finalize_pipe_parse(response, &mut parse);
+            }
+            None => return None,
+        };
+
+        if available == 0 {
+            if std::time::Instant::now() >= deadline {
+                return finalize_pipe_parse(response, &mut parse);
+            }
+            std::thread::sleep(PIPE_POLL_INTERVAL);
+            continue;
+        }
+
+        match read_named_pipe_bytes(stream, available, chunk, response) {
+            PipeReadResult::Continue => {}
+            PipeReadResult::Eof => return finalize_pipe_parse(response, &mut parse),
+            PipeReadResult::Failed => return None,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn finalize_pipe_parse<T, F>(response: &[u8], parse: &mut F) -> Option<T>
+where
+    F: FnMut(&[u8], bool) -> PipeParseState<T>,
+{
+    match parse(response, true) {
+        PipeParseState::Done(value) => Some(value),
+        PipeParseState::Pending | PipeParseState::Failed => None,
+    }
 }
 
 #[cfg(windows)]
@@ -456,35 +510,17 @@ fn send_http_post_status_windows(
     let mut response = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
 
-    loop {
-        if let Some(hdr) = http::parse_response_headers(&response) {
-            return Some(hdr.status_code);
-        }
-
-        let available = match peek_available_bytes(stream) {
-            Some(available) => available,
-            None if last_os_error_is(ERROR_BROKEN_PIPE) => {
-                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
-            }
-            None => return None,
-        };
-
-        if available == 0 {
-            if std::time::Instant::now() >= deadline {
-                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
-            }
-            std::thread::sleep(PIPE_POLL_INTERVAL);
-            continue;
-        }
-
-        match read_named_pipe_bytes(stream, available, &mut chunk, &mut response) {
-            PipeReadResult::Continue => {}
-            PipeReadResult::Eof => {
-                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
-            }
-            PipeReadResult::Failed => return None,
-        }
-    }
+    poll_named_pipe_response(
+        stream,
+        deadline,
+        &mut chunk,
+        &mut response,
+        |response, _eof| {
+            http::parse_response_headers(response).map_or(PipeParseState::Pending, |hdr| {
+                PipeParseState::Done(hdr.status_code)
+            })
+        },
+    )
 }
 
 /// Send a POST request to stop or kill a container via TCP.
