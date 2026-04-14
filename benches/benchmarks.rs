@@ -53,6 +53,23 @@ fn synthetic_entries(n: u16) -> Vec<PortEntry> {
 fn bench_filter(c: &mut Criterion) {
     let entries = synthetic_entries(500);
 
+    let show_all = FilterOptions {
+        tcp_only: false,
+        udp_only: false,
+        listen_only: false,
+        port: None,
+        process: None,
+        grep: None,
+        show_all: true,
+    };
+    c.bench_function("filter_show_all_500", |b| {
+        b.iter_batched(
+            || entries.clone(),
+            |data| filter::apply(data, &show_all),
+            BatchSize::SmallInput,
+        );
+    });
+
     let tcp_only = FilterOptions {
         tcp_only: true,
         udp_only: false,

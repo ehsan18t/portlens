@@ -3,6 +3,7 @@
 //! Applies user-specified CLI filters to the collected port entries before
 //! display.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
@@ -114,16 +115,27 @@ const fn is_relevant(entry: &PortEntry) -> bool {
 /// Check whether a process name matches the `--process` filter exactly.
 ///
 /// Strips the `.exe` suffix (if present) and compares case-insensitively.
-/// The filter value is already lowercased by the CLI normalizer.
 fn matches_process_name(process: &str, filter: &str) -> bool {
     strip_windows_exe_suffix(process).eq_ignore_ascii_case(filter)
+}
+
+/// Normalize a grep pattern once using ASCII case folding.
+///
+/// Returns a borrowed string when the pattern is already free of
+/// uppercase ASCII bytes so the common CLI path avoids allocation.
+fn normalize_grep_pattern(pattern: &str) -> Cow<'_, str> {
+    if pattern.as_bytes().iter().any(u8::is_ascii_uppercase) {
+        Cow::Owned(pattern.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(pattern)
+    }
 }
 
 /// Check whether a process name contains the `--grep` substring.
 ///
 /// Compares case-insensitively against the full process name (including
-/// any `.exe` suffix). The filter value is already lowercased by the CLI
-/// normalizer, so only the process bytes need per-character lowering.
+/// any `.exe` suffix). The caller supplies an ASCII-case-folded pattern,
+/// so only the process bytes need per-character lowering.
 ///
 /// Optimizations over a naive `to_ascii_lowercase().contains()`:
 ///
@@ -169,8 +181,10 @@ fn contains_process_pattern(process: &str, pattern: &str) -> bool {
 /// functions when those filters are inactive.
 #[must_use]
 pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
+    let process_filter = opts.process.as_deref().map(strip_windows_exe_suffix);
+    let grep_pattern = opts.grep.as_deref().map(normalize_grep_pattern);
     let bypass_relevance =
-        opts.show_all || opts.port.is_some() || opts.process.is_some() || opts.grep.is_some();
+        opts.show_all || opts.port.is_some() || process_filter.is_some() || grep_pattern.is_some();
 
     entries.retain(|e| {
         if opts.tcp_only && e.proto != Protocol::Tcp {
@@ -193,11 +207,11 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
         true
     });
 
-    if let Some(ref name) = opts.process {
+    if let Some(name) = process_filter {
         entries.retain(|e| matches_process_name(&e.process, name));
     }
 
-    if let Some(ref pattern) = opts.grep {
+    if let Some(pattern) = grep_pattern.as_deref() {
         entries.retain(|e| contains_process_pattern(&e.process, pattern));
     }
 
@@ -804,6 +818,21 @@ mod tests {
     }
 
     #[test]
+    fn process_filter_accepts_exe_suffix_in_filter() {
+        let entries = vec![make_process_entry(80, "node.exe")];
+        let opts = FilterOptions {
+            process: Some("node.EXE".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "process filter should also accept a .exe suffix in the filter value"
+        );
+    }
+
+    #[test]
     fn process_filter_case_insensitive() {
         let entries = vec![
             make_process_entry(80, "Code.exe"),
@@ -896,6 +925,21 @@ mod tests {
             result.len(),
             1,
             "grep filter should match case-insensitively"
+        );
+    }
+
+    #[test]
+    fn grep_filter_uppercase_pattern_is_normalized() {
+        let entries = vec![make_process_entry(80, "Code.exe")];
+        let opts = FilterOptions {
+            grep: Some("CODE".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "grep filter should not depend on CLI-side lowercase normalization"
         );
     }
 
