@@ -44,7 +44,8 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
-    let exe_path = sysinfo_process.and_then(sysinfo::Process::exe);
+    let exe_path = listener_executable_path(&l.process)
+        .or_else(|| sysinfo_process.and_then(sysinfo::Process::exe));
     let exe_name = process_executable_name(exe_path);
     let user = user::resolve_user(sysinfo_process, l.process.pid, context.user_resolver);
 
@@ -115,6 +116,10 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         app,
         uptime_secs,
     }
+}
+
+fn listener_executable_path(process: &listeners::Process) -> Option<&Path> {
+    (!process.path.is_empty()).then(|| Path::new(process.path.as_str()))
 }
 
 fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
@@ -205,10 +210,15 @@ fn process_uptime_secs(now_epoch: u64, start_time: u64) -> Option<u64> {
 ///
 /// Always collects user and executable-path metadata. Deep enrichment also
 /// collects working-directory and command-line data for project detection.
-pub(super) fn process_refresh_kind(deep_enrichment: bool) -> ProcessRefreshKind {
-    let refresh_kind = ProcessRefreshKind::nothing()
-        .with_user(UpdateKind::OnlyIfNotSet)
-        .with_exe(UpdateKind::OnlyIfNotSet);
+pub(super) fn process_refresh_kind(
+    deep_enrichment: bool,
+    refresh_exe_paths: bool,
+) -> ProcessRefreshKind {
+    let mut refresh_kind = ProcessRefreshKind::nothing().with_user(UpdateKind::OnlyIfNotSet);
+
+    if refresh_exe_paths {
+        refresh_kind = refresh_kind.with_exe(UpdateKind::OnlyIfNotSet);
+    }
 
     if deep_enrichment {
         refresh_kind
@@ -244,6 +254,63 @@ mod tests {
         assert!(
             process_executable_name(Some(exe_path)).is_none(),
             "paths without a usable file name should be ignored"
+        );
+    }
+
+    #[test]
+    fn listener_executable_path_uses_listener_path_when_present() {
+        let process = listeners::Process {
+            pid: 1234,
+            name: "node".to_string(),
+            path: "/usr/bin/node".to_string(),
+        };
+
+        assert_eq!(
+            listener_executable_path(&process),
+            Some(Path::new("/usr/bin/node")),
+            "listener-provided executable paths should be re-used"
+        );
+    }
+
+    #[test]
+    fn listener_executable_path_ignores_empty_listener_path() {
+        let process = listeners::Process {
+            pid: 1234,
+            name: "node".to_string(),
+            path: String::new(),
+        };
+
+        assert!(
+            listener_executable_path(&process).is_none(),
+            "empty listener paths should fall back to sysinfo"
+        );
+    }
+
+    #[test]
+    fn process_refresh_kind_skips_exe_refresh_when_listener_paths_exist() {
+        let refresh_kind = process_refresh_kind(false, false);
+
+        assert!(
+            matches!(refresh_kind.exe(), UpdateKind::Never),
+            "exe refresh should stay disabled when listener metadata already has paths"
+        );
+    }
+
+    #[test]
+    fn process_refresh_kind_keeps_deep_metadata_without_exe_refresh() {
+        let refresh_kind = process_refresh_kind(true, false);
+
+        assert!(
+            matches!(refresh_kind.cwd(), UpdateKind::OnlyIfNotSet),
+            "deep enrichment still needs cwd metadata"
+        );
+        assert!(
+            matches!(refresh_kind.cmd(), UpdateKind::OnlyIfNotSet),
+            "deep enrichment still needs command-line metadata"
+        );
+        assert!(
+            matches!(refresh_kind.exe(), UpdateKind::Never),
+            "listener paths should still avoid redundant exe refreshes during deep enrichment"
         );
     }
 

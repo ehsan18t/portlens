@@ -101,13 +101,22 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     let mut sys = System::new();
     let tracked_pids = tracked_process_ids(&raw_listeners);
+    let refresh_exe_paths = raw_listeners
+        .iter()
+        .any(|listener| listener.process.path.is_empty());
     debug!(
-        "enumerated raw listeners: deep_enrichment={} listeners={} tracked_pids={}",
+        "enumerated raw listeners: deep_enrichment={} listeners={} tracked_pids={} refresh_exe_paths={}",
         options.deep_enrichment,
         raw_listeners.len(),
-        tracked_pids.len()
+        tracked_pids.len(),
+        refresh_exe_paths
     );
-    refresh_tracked_processes(&mut sys, &tracked_pids, options.deep_enrichment);
+    refresh_tracked_processes(
+        &mut sys,
+        &tracked_pids,
+        options.deep_enrichment,
+        refresh_exe_paths,
+    );
 
     let mut user_resolver = UserResolver::default();
 
@@ -176,6 +185,7 @@ fn refresh_tracked_processes(
     sys: &mut System,
     tracked_pids: &[sysinfo::Pid],
     deep_enrichment: bool,
+    refresh_exe_paths: bool,
 ) {
     // `false` = do not remove previously-tracked dead processes. On a
     // freshly created System the internal map is empty, so this flag
@@ -188,7 +198,7 @@ fn refresh_tracked_processes(
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(tracked_pids),
         false,
-        entry::process_refresh_kind(deep_enrichment),
+        entry::process_refresh_kind(deep_enrichment, refresh_exe_paths),
     );
 }
 
