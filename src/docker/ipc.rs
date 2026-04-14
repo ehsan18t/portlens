@@ -108,22 +108,37 @@ where
     I: IntoIterator<Item = P>,
     F: Fn(P) -> Option<String> + Send + Sync + 'static,
 {
+    fetch_all_successes_with_timeout(candidates, fetch, DAEMON_TIMEOUT)
+}
+
+#[cfg(unix)]
+fn fetch_all_successes_with_timeout<P, I, F>(
+    candidates: I,
+    fetch: F,
+    timeout: std::time::Duration,
+) -> Vec<String>
+where
+    P: Send + 'static,
+    I: IntoIterator<Item = P>,
+    F: Fn(P) -> Option<String> + Send + Sync + 'static,
+{
     let (tx, rx) = std::sync::mpsc::channel();
     let fetch = std::sync::Arc::new(fetch);
+    let mut handles = Vec::new();
 
     for candidate in candidates {
         let tx = tx.clone();
         let fetch = std::sync::Arc::clone(&fetch);
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Some(body) = fetch(candidate) {
                 drop(tx.send(body));
             }
-        });
+        }));
     }
 
     drop(tx);
     let mut responses = Vec::new();
-    let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
 
     while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
         match rx.recv_timeout(remaining) {
@@ -137,7 +152,16 @@ where
         }
     }
 
+    join_worker_threads(handles);
+
     responses
+}
+
+#[cfg(unix)]
+fn join_worker_threads(handles: Vec<std::thread::JoinHandle<()>>) {
+    for handle in handles {
+        drop(handle.join());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +488,15 @@ pub(super) fn stop_via_tcp(addr: &str, endpoint: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[cfg(unix)]
+    use std::time::Duration;
+
+    #[cfg(unix)]
     use std::path::PathBuf;
 
     #[cfg(unix)]
@@ -491,5 +524,33 @@ mod tests {
         responses.sort();
 
         assert_eq!(responses, vec!["1".to_string(), "3".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_all_successes_waits_for_workers_before_returning() {
+        let active_workers = Arc::new(AtomicUsize::new(0));
+        let worker_counter = Arc::clone(&active_workers);
+
+        let responses = fetch_all_successes_with_timeout(
+            [1_u8, 2],
+            move |_candidate| {
+                worker_counter.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(25));
+                worker_counter.fetch_sub(1, Ordering::SeqCst);
+                None
+            },
+            Duration::from_millis(1),
+        );
+
+        assert!(
+            responses.is_empty(),
+            "workers that return no body should produce no results"
+        );
+        assert_eq!(
+            active_workers.load(Ordering::SeqCst),
+            0,
+            "worker threads should finish before the helper returns"
+        );
     }
 }
