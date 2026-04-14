@@ -116,15 +116,13 @@ fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
     // exit code (2); callers here can rely on `port >= 1`.
     match opts.target {
         KillTarget::Port(port) => targets_for_port(port),
-        KillTarget::Pid(pid) => Ok(resolve_pid_target(pid)
-            .into_iter()
-            .collect()),
+        KillTarget::Pid(pid) => Ok(resolve_pid_target(pid).into_iter().collect()),
     }
 }
 
 fn resolve_pid_target(pid: u32) -> Option<ResolvedTarget> {
     if preserve_pid_target(pid) || pid_exists(pid) {
-        let target = target_for_pid(pid).unwrap_or(Target {
+        let target = target_for_pid(pid).unwrap_or_else(|| Target {
             pid,
             process: "-".to_owned(),
         });
