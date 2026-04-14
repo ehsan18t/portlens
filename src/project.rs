@@ -10,6 +10,11 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+
 /// Files whose presence indicates a project root directory.
 const PROJECT_MARKERS: &[&str] = &[
     "package.json",
@@ -147,9 +152,11 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 
 /// Return the current user's home directory, if it can be determined.
 ///
-/// Uses `HOME` on Unix and `USERPROFILE` on Windows. Returns `None`
-/// when the environment variable is unset, in which case only the
-/// `MAX_WALK_DEPTH` guards against over-traversal.
+/// On Unix, this prefers `SUDO_HOME` / `SUDO_UID` during `sudo` sessions,
+/// otherwise it resolves the home directory from the password database and
+/// only falls back to `HOME` if lookup fails. On Windows, it uses
+/// `USERPROFILE`. Returns `None` when no home directory can be determined,
+/// in which case only the `MAX_WALK_DEPTH` guards against over-traversal.
 ///
 /// Callers should call this **once** and pass the result into
 /// [`find_from_dir`] / [`detect_project_root`] to avoid repeated
@@ -158,11 +165,88 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        std::env::var_os("HOME").map(PathBuf::from)
+        sudo_home_dir()
+            .or_else(|| preferred_home_uid().and_then(home_dir_from_uid))
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
     }
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+}
+
+#[cfg(unix)]
+fn sudo_home_dir() -> Option<PathBuf> {
+    (current_effective_uid() == 0)
+        .then(|| std::env::var_os("SUDO_HOME"))
+        .flatten()
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(unix)]
+fn preferred_home_uid() -> Option<libc::uid_t> {
+    preferred_home_uid_from_env(
+        std::env::var_os("SUDO_UID").as_deref(),
+        current_effective_uid(),
+    )
+}
+
+#[cfg(unix)]
+fn preferred_home_uid_from_env(
+    sudo_uid: Option<&OsStr>,
+    current_euid: libc::uid_t,
+) -> Option<libc::uid_t> {
+    if current_euid == 0 {
+        sudo_uid
+            .and_then(OsStr::to_str)
+            .and_then(|value| value.parse::<libc::uid_t>().ok())
+            .or(Some(current_euid))
+    } else {
+        Some(current_euid)
+    }
+}
+
+#[cfg(unix)]
+fn current_effective_uid() -> libc::uid_t {
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn home_dir_from_uid(uid: libc::uid_t) -> Option<PathBuf> {
+    let mut buffer = vec![0_u8; passwd_buffer_len()];
+    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
+    let mut result = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            passwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut result,
+        )
+    };
+
+    if status != 0 || result.is_null() {
+        return None;
+    }
+
+    let passwd = unsafe { passwd.assume_init() };
+    if passwd.pw_dir.is_null() {
+        return None;
+    }
+
+    let home = unsafe { CStr::from_ptr(passwd.pw_dir) };
+    Some(Path::new(OsStr::from_bytes(home.to_bytes())).to_path_buf())
+}
+
+#[cfg(unix)]
+fn passwd_buffer_len() -> usize {
+    const DEFAULT_PASSWD_BUFFER_LEN: usize = 1024;
+
+    match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        size if size > 0 => usize::try_from(size).unwrap_or(DEFAULT_PASSWD_BUFFER_LEN),
+        _ => DEFAULT_PASSWD_BUFFER_LEN,
     }
 }
 
@@ -328,6 +412,36 @@ mod tests {
         assert!(
             result.is_none(),
             "walk should stop after MAX_WALK_DEPTH levels"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferred_home_uid_from_env_prefers_sudo_uid_for_root_sessions() {
+        assert_eq!(
+            preferred_home_uid_from_env(Some(OsStr::new("1000")), 0),
+            Some(1000),
+            "sudo sessions should prefer the invoking user's uid"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferred_home_uid_from_env_ignores_sudo_uid_for_non_root_sessions() {
+        assert_eq!(
+            preferred_home_uid_from_env(Some(OsStr::new("1000")), 2000),
+            Some(2000),
+            "non-root sessions should keep the current effective uid"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferred_home_uid_from_env_falls_back_when_sudo_uid_is_invalid() {
+        assert_eq!(
+            preferred_home_uid_from_env(Some(OsStr::new("not-a-uid")), 0),
+            Some(0),
+            "invalid sudo metadata should not break home-directory lookup"
         );
     }
 }
