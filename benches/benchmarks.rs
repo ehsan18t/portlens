@@ -26,6 +26,12 @@ const ALL_HIT_TOKEN: &str = "needle";
 const NO_HIT_TOKEN: &str = "absent";
 const EXACT_PROCESS_TOKEN: &str = "target-process";
 
+/// Relative-comparison CI only benchmarks names that already exist on the
+/// merge-base so Criterion does not panic on missing baselines.
+fn compare_mode() -> bool {
+    std::env::var_os("PORTLENS_BENCH_COMPARE").is_some()
+}
+
 /// Shared benchmark entry construction.
 fn make_entry(i: u16, process: Arc<str>) -> PortEntry {
     PortEntry {
@@ -234,8 +240,8 @@ fn grep_tcp_filter(pattern: &str) -> FilterOptions {
 
 fn bench_filter(c: &mut Criterion) {
     let entries = synthetic_entries(BENCH_ENTRY_COUNT);
+    let compare_mode = compare_mode();
 
-    bench_filter_case(c, "filter_show_all_500", &entries, &show_all_filter());
     bench_filter_case(c, "filter_tcp_only_500", &entries, &tcp_only_filter());
     bench_filter_case(c, "filter_relevance_500", &entries, &relevance_filter());
     bench_filter_case(
@@ -245,9 +251,17 @@ fn bench_filter(c: &mut Criterion) {
         &port_filter(BENCH_ENTRY_COUNT),
     );
     bench_filter_case(c, "filter_combined_500", &entries, &combined_filter());
+
+    if !compare_mode {
+        bench_filter_case(c, "filter_show_all_500", &entries, &show_all_filter());
+    }
 }
 
 fn bench_filter_string(c: &mut Criterion) {
+    if compare_mode() {
+        return;
+    }
+
     let broad_entries = synthetic_entries(BENCH_ENTRY_COUNT);
     let exact_entries = exact_process_entries(BENCH_ENTRY_COUNT);
 
@@ -273,6 +287,10 @@ fn bench_filter_string(c: &mut Criterion) {
 }
 
 fn bench_filter_scale(c: &mut Criterion) {
+    if compare_mode() {
+        return;
+    }
+
     let mut group = c.benchmark_group("filter_scale");
     configure_parameterized_group(&mut group);
 
@@ -290,6 +308,10 @@ fn bench_filter_scale(c: &mut Criterion) {
 }
 
 fn bench_filter_hit_rates(c: &mut Criterion) {
+    if compare_mode() {
+        return;
+    }
+
     let mut group = c.benchmark_group("filter_hit_rates");
     configure_parameterized_group(&mut group);
 

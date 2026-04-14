@@ -135,6 +135,24 @@ Release builds use a size-focused profile (`opt-level = "z"`, LTO, symbol
 stripping, single codegen unit, and `panic = "abort"`) so the shipped CLI
 stays compact, especially on Windows.
 
+## Benchmarking
+
+The repository uses Criterion for microbenchmarks. Run the suite locally with:
+
+```bash
+cargo bench --bench benchmarks
+```
+
+Pull requests targeting `main` also run an advisory benchmark job in CI. That
+job compares a baseline-compatible subset against the merge-base, then runs the
+full PR-head suite and uploads a `benchmark-reports-<sha>` artifact containing
+both raw console logs and the generated `target/criterion/` reports so you can
+inspect exact timings and graphs from the Actions UI.
+
+CI also applies coarse absolute budgets to a small set of benchmarked hot
+paths. That separate budget layer catches large slowdowns for new benchmark
+names even before they have historical baselines on `main`.
+
 Windows builds embed an Explorer icon when `assets/icon.ico` is present. The
 current `assets/icon.png` is source artwork only. Add a multi-size `.ico` file
 at `assets/icon.ico` with at least `16x16`, `32x32`, `48x48`, and `256x256`

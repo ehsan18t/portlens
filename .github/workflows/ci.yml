@@ -103,12 +103,12 @@ jobs:
 
   # Advisory gate: Benchmark regression detection.
   #
-  # Runs the Criterion suite twice — once on the PR's merge-base on `main`
-  # (establishing a baseline) and once on the PR head (comparing against it) —
-  # then surfaces any bench flagged by Criterion as regressed beyond the 10%
-  # noise threshold. Linux-only because Windows GitHub runners are too noisy
-  # for useful bench comparison. PR-only because pushes to `main` have no
-  # baseline to diff against.
+  # Runs the merge-base benchmarks once to establish a Criterion baseline, then
+  # runs a baseline-compatible subset on the PR head for relative comparison.
+  # The full PR-head suite is then executed separately so new benchmark names
+  # still produce reports and can be checked against coarse absolute budgets.
+  # Linux-only because Windows GitHub runners are too noisy for useful bench
+  # comparison. PR-only because pushes to `main` have no baseline to diff against.
   #
   # `continue-on-error: true` keeps this advisory: a regression surfaces as a
   # warning annotation on the PR rather than blocking the merge, matching the
@@ -151,21 +151,65 @@ jobs:
             --save-baseline pr_base --noise-threshold 0.10
           git checkout --detach "$head_sha"
 
-      - name: Run benchmarks on PR head and compare
+      - name: Run baseline-compatible benchmarks on PR head and compare
+        id: relative-compare
+        continue-on-error: true
+        env:
+          PORTLENS_BENCH_COMPARE: 1
         run: |
           cargo bench --locked --bench benchmarks -- \
             --baseline pr_base --noise-threshold 0.10 \
+            | tee bench_compare_output.txt
+
+      - name: Run full benchmark suite on PR head
+        id: full-bench
+        continue-on-error: true
+        run: |
+          cargo bench --locked --bench benchmarks \
             | tee bench_output.txt
 
+      - name: Check absolute performance budgets
+        id: budget
+        continue-on-error: true
+        run: bash scripts/check-benchmark-budget.sh bench_output.txt
+
       - name: Flag regressions
+        id: relative-regression
+        continue-on-error: true
         run: |
-          if grep -E "Performance has regressed" bench_output.txt; then
-            grep -B1 "Performance has regressed" bench_output.txt \
+          if [[ ! -f bench_compare_output.txt ]]; then
+            echo "Relative comparison output is missing."
+            exit 1
+          fi
+
+          if grep -E "Performance has regressed" bench_compare_output.txt; then
+            grep -B1 "Performance has regressed" bench_compare_output.txt \
               | sed -n 's/.*/::warning::Bench regression: &/p'
             echo "One or more benchmarks regressed beyond the 10% noise threshold."
             exit 1
           fi
           echo "No benchmark regressions detected."
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: benchmark-reports-${{ github.sha }}
+          path: |
+            bench_compare_output.txt
+            bench_output.txt
+            target/criterion
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Fail benchmark checks
+        if: always()
+        run: |
+          if [[ "${{ steps.relative-compare.outcome }}" == "failure" || "${{ steps.full-bench.outcome }}" == "failure" || "${{ steps.budget.outcome }}" == "failure" || "${{ steps.relative-regression.outcome }}" == "failure" ]]; then
+            echo "One or more benchmark checks failed."
+            exit 1
+          fi
+          echo "All benchmark checks passed."
 
   # Gate 7: Dependency audit — rejects vulnerable/banned/unlicensed dependencies.
   # Uses EmbarkStudios/cargo-deny-action (Docker-based, pre-built binary — no

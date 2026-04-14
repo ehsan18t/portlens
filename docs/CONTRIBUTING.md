@@ -80,6 +80,19 @@ All of the following must pass before merging:
 CI runs on every push to `main` **and** on every pull request targeting `main`,
 so cross-platform issues (Linux + Windows matrix) are caught before a PR is merged.
 
+Pull requests also run an advisory benchmark job on Linux. CI first compares a
+baseline-compatible subset against the merge-base on `main`, then runs the full
+PR-head suite separately so new benchmark names still produce reports. CI
+uploads a `benchmark-reports-<sha>` artifact that contains both raw console logs
+plus the full `target/criterion/` report tree, so reviewers can inspect the
+measured timings even when the job only raises a warning.
+
+The benchmark job now also runs `scripts/check-benchmark-budget.sh` against the
+full-suite `bench_output.txt` log. That script enforces coarse absolute budgets
+for a small set of hot paths so brand-new benchmark names are still covered on
+their first PR, even before they have a `main`-branch baseline for Criterion to
+compare against.
+
 Workflow dependencies in `.github/workflows/` are pinned to full commit SHAs.
 When updating an action, keep the trailing version comment (for example `# v6`)
 so reviewers can see the intended upstream release at a glance.
