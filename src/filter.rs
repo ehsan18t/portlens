@@ -123,11 +123,25 @@ fn matches_process_name(process: &str, filter: &str) -> bool {
 ///
 /// Compares case-insensitively against the full process name (including
 /// any `.exe` suffix). The filter value is already lowercased by the CLI
-/// normalizer.
+/// normalizer, so only the process bytes need per-character lowering.
+///
+/// Uses a byte-window scan to avoid heap-allocating a lowercased copy of
+/// the process name on every call.
 fn contains_process_pattern(process: &str, pattern: &str) -> bool {
+    let pattern_bytes = pattern.as_bytes();
+    if pattern_bytes.is_empty() {
+        return true;
+    }
+
     process
-        .to_ascii_lowercase()
-        .contains(&*pattern.to_ascii_lowercase())
+        .as_bytes()
+        .windows(pattern_bytes.len())
+        .any(|window| {
+            window
+                .iter()
+                .zip(pattern_bytes)
+                .all(|(a, b)| a.to_ascii_lowercase() == *b)
+        })
 }
 
 /// Apply the given filter options to a collection of entries.
