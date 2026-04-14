@@ -8,6 +8,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
+use portlens::filter::PortFilter;
 use portlens::{collector, display, filter};
 
 /// Exit code for runtime errors (failed to enumerate sockets, write errors).
@@ -23,7 +24,7 @@ struct Cli {
     tcp: bool,
     udp: bool,
     listen: bool,
-    port: Option<u16>,
+    port: Option<PortFilter>,
     all: bool,
     full: bool,
     compact: bool,
@@ -213,10 +214,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let tcp = pargs.contains(["-t", "--tcp"]);
     let udp = pargs.contains(["-u", "--udp"]);
     let listen = pargs.contains(["-l", "--listen"]);
-    let port: Option<u16> = pargs
+    let port: Option<PortFilter> = pargs
         .opt_value_from_str(["-p", "--port"])
-        .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
-    validate_port_arg(port)?;
+        .context("invalid value for '--port' (expected a port number or range like 3000-4000)")?;
+    validate_port_filter(port)?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -260,6 +261,17 @@ fn validate_port_arg(port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
+/// Validate a [`PortFilter`] from `--port`, rejecting port 0 in either variant.
+fn validate_port_filter(port: Option<PortFilter>) -> Result<()> {
+    if let Some(filter) = port
+        && filter.contains_zero()
+    {
+        bail!("invalid value for '--port' (port numbers must be in 1..=65535)");
+    }
+
+    Ok(())
+}
+
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
     println!("PortLens {version}");
@@ -275,7 +287,7 @@ fn print_help() {
     println!("  -t, --tcp            Show only TCP sockets");
     println!("  -u, --udp            Show only UDP sockets");
     println!("  -l, --listen         Show only sockets in LISTEN state (TCP only)");
-    println!("  -p, --port <PORT>    Filter results to a specific port number");
+    println!("  -p, --port <PORT>    Filter results to a port or range (e.g. 3000 or 3000-4000)");
     println!("  -a, --all            Show all ports (disable developer-relevant filter)");
     println!("  -f, --full           Show all columns (adds STATE, USER)");
     println!("  -c, --compact        Use compact borderless table style");
@@ -391,8 +403,64 @@ mod tests {
             .expect_err("top-level --port 0 should be rejected during parsing");
 
         assert!(
-            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
             "port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_global_port_range_with_zero() {
+        let error = parse_cli(args(&["--port", "0-100"]))
+            .expect_err("top-level --port 0-100 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
+            "port range starting at zero should produce a usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_single_port() {
+        let cli = parse_cli(args(&["--port", "8080"])).expect("single port should parse");
+        assert_eq!(
+            cli.port,
+            Some(PortFilter::Single(8080)),
+            "single port should be stored as PortFilter::Single"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_port_range() {
+        let cli = parse_cli(args(&["--port", "3000-4000"])).expect("port range should parse");
+        assert_eq!(
+            cli.port,
+            Some(PortFilter::Range {
+                start: 3000,
+                end: 4000
+            }),
+            "port range should be stored as PortFilter::Range"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_reversed_port_range() {
+        let error = parse_cli(args(&["--port", "5000-3000"]))
+            .expect_err("reversed range should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("must not exceed"),
+            "reversed range should report start > end: {error:#}"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_non_numeric_port() {
+        let error =
+            parse_cli(args(&["--port", "abc"])).expect_err("non-numeric port should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("not a valid port number"),
+            "non-numeric port should report a parsing failure: {error:#}"
         );
     }
 

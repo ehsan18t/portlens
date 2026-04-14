@@ -45,6 +45,9 @@ portlens --listen
 # Filter to a specific port
 portlens --port 8080
 
+# Filter to a port range (useful for microservice clusters)
+portlens --port 3000-4000
+
 # Disable Docker/Podman and project-root enrichment
 portlens --no-enrich
 
@@ -141,20 +144,20 @@ cargo install portlens
 
 ## CLI Reference
 
-| Flag           | Short | Description                                                             |
-| -------------- | ----- | ----------------------------------------------------------------------- |
-| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter)                      |
-| `--full`       | `-f`  | Show all columns (adds STATE, USER)                                     |
-| `--compact`    | `-c`  | Use compact borderless table style                                      |
-| `--tcp`        | `-t`  | Show only TCP sockets                                                   |
-| `--udp`        | `-u`  | Show only UDP sockets                                                   |
-| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)                            |
-| `--port <num>` | `-p`  | Filter results to the specified port number and bypass the smart filter |
-| `--no-header`  |       | Suppress the column header row                                          |
-| `--json`       |       | Output results as a JSON array                                          |
-| `--no-enrich`  |       | Disable Docker/Podman, project-root, and config-file enrichment         |
-| `--version`    | `-v`  | Print the version string and exit                                       |
-| `--help`       | `-h`  | Print usage information and exit                                        |
+| Flag            | Short | Description                                                                                |
+| --------------- | ----- | ------------------------------------------------------------------------------------------ |
+| `--all`         | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
+| `--full`        | `-f`  | Show all columns (adds STATE, USER)                                                        |
+| `--compact`     | `-c`  | Use compact borderless table style                                                         |
+| `--tcp`         | `-t`  | Show only TCP sockets                                                                      |
+| `--udp`         | `-u`  | Show only UDP sockets                                                                      |
+| `--listen`      | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
+| `--port <PORT>` | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
+| `--no-header`   |       | Suppress the column header row                                                             |
+| `--json`        |       | Output results as a JSON array                                                             |
+| `--no-enrich`   |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
+| `--version`     | `-v`  | Print the version string and exit                                                          |
+| `--help`        | `-h`  | Print usage information and exit                                                           |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
 
@@ -220,7 +223,7 @@ Additional columns with `--full`:
 
 **Developer-relevant filter:** By default, PortLens only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
 
-**Explicit port queries:** `--port <num>` always shows matching sockets even when the owning process is not recognized as developer-relevant.
+**Explicit port queries:** `--port <PORT>` always shows matching sockets even when the owning process is not recognized as developer-relevant. Accepts a single port (`--port 3000`) or an inclusive range (`--port 3000-4000`), which is particularly useful when debugging microservice clusters assigned a port block.
 
 **Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 

@@ -87,7 +87,7 @@ fn bench_filter(c: &mut Criterion) {
         tcp_only: false,
         udp_only: false,
         listen_only: false,
-        port: Some(250),
+        port: Some(filter::PortFilter::Single(250)),
         show_all: true,
     };
     c.bench_function("filter_port_500", |b| {
