@@ -67,55 +67,93 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
 
     let container_map = docker::await_detection(docker_handle);
 
+    resolve_targets_from_entries(
+        entries,
+        filter,
+        &container_map,
+        #[cfg(target_os = "linux")]
+        &mut docker::RootlessPodmanResolver::default(),
+        #[cfg(target_os = "linux")]
+        crate::project::home_dir().as_deref(),
+    )
+}
+
+fn resolve_targets_from_entries(
+    entries: Vec<PortEntry>,
+    filter: PortFilter,
+    container_map: &ContainerPortMap,
+    #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
+    #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
+) -> Result<Vec<ResolvedTarget>> {
     let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut seen_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut targets = Vec::new();
-    #[cfg(target_os = "linux")]
-    let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
-    #[cfg(target_os = "linux")]
-    let home = crate::project::home_dir();
 
     for entry in entries {
         if !matches_port_target(&entry, filter) {
             continue;
         }
-        // Skip duplicate PIDs (same process on IPv4 + IPv6).
-        if !seen_pids.insert(entry.pid) {
-            continue;
+
+        append_target_from_entry(
+            &entry,
+            container_map,
+            &mut seen_pids,
+            &mut seen_containers,
+            &mut targets,
+            #[cfg(target_os = "linux")]
+            podman_rootless_resolver,
+            #[cfg(target_os = "linux")]
+            home,
+        )?;
+    }
+
+    Ok(targets)
+}
+
+fn append_target_from_entry(
+    entry: &PortEntry,
+    container_map: &ContainerPortMap,
+    seen_pids: &mut std::collections::HashSet<u32>,
+    seen_containers: &mut std::collections::HashSet<String>,
+    targets: &mut Vec<ResolvedTarget>,
+    #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
+    #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
+) -> Result<()> {
+    let process_name = entry.process.as_ref();
+
+    // Known proxy/helper processes can multiplex multiple published ports on a
+    // single PID, so container dedup must happen after proxy resolution.
+    if collector::is_docker_proxy_process(process_name) {
+        let ct = container_target_for_entry(
+            container_map,
+            entry,
+            #[cfg(target_os = "linux")]
+            podman_rootless_resolver,
+            #[cfg(target_os = "linux")]
+            home,
+        )?;
+
+        if seen_containers.insert(ct.container_id.clone()) {
+            debug!(
+                "resolved port {} to container '{}' (proxy pid {})",
+                entry.port, ct.container_name, ct.proxy_pid
+            );
+            targets.push(ResolvedTarget::Container(ct));
         }
 
-        let process_name = entry.process.as_ref();
+        return Ok(());
+    }
 
-        // When the process is a known Docker proxy and we have container
-        // info for this port, prefer stopping the container via API.
-        if collector::is_docker_proxy_process(process_name) {
-            let ct = container_target_for_entry(
-                &container_map,
-                &entry,
-                #[cfg(target_os = "linux")]
-                &mut podman_rootless_resolver,
-                #[cfg(target_os = "linux")]
-                home.as_deref(),
-            )?;
-
-            // Dedup by container to avoid sending stop twice when the
-            // proxy listens on both IPv4 and IPv6 with different PIDs.
-            if seen_containers.insert(ct.container_id.clone()) {
-                debug!(
-                    "resolved port {} to container '{}' (proxy pid {})",
-                    entry.port, ct.container_name, ct.proxy_pid
-                );
-                targets.push(ResolvedTarget::Container(ct));
-            }
-            continue;
-        }
-
+    // Non-proxy processes can own multiple matching sockets, but signaling the
+    // same PID more than once is redundant.
+    if seen_pids.insert(entry.pid) {
         targets.push(ResolvedTarget::Process(Target {
             pid: entry.pid,
             process: process_name.to_owned(),
         }));
     }
-    Ok(targets)
+
+    Ok(())
 }
 
 fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
@@ -314,5 +352,95 @@ mod tests {
             target_for_pid(u32::MAX).is_none(),
             "an impossible pid should not resolve to a synthetic kill target"
         );
+    }
+
+    #[test]
+    fn resolve_targets_from_entries_keeps_multiple_container_targets_for_shared_proxy_pid() {
+        let mut first = make_entry(3000, Protocol::Tcp, State::Listen, "com.docker.backend.exe");
+        first.pid = 7000;
+        first.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+        let mut second = make_entry(4000, Protocol::Tcp, State::Listen, "com.docker.backend.exe");
+        second.pid = 7000;
+        second.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+        let mut map = ContainerPortMap::new();
+        map.insert(
+            (None, 3000, Protocol::Tcp),
+            docker::ContainerInfo {
+                id: "container-a".to_string(),
+                name: "api-a".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+        map.insert(
+            (None, 4000, Protocol::Tcp),
+            docker::ContainerInfo {
+                id: "container-b".to_string(),
+                name: "api-b".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let targets = resolve_targets_from_entries(
+            vec![first, second],
+            PortFilter::Range {
+                start: 3000,
+                end: 4000,
+            },
+            &map,
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect("shared proxy pids should still resolve each container target");
+
+        assert_eq!(
+            targets.len(),
+            2,
+            "both container targets should remain visible"
+        );
+        assert!(matches!(
+            &targets[0],
+            ResolvedTarget::Container(ContainerTarget { container_name, .. }) if container_name == "api-a"
+        ));
+        assert!(matches!(
+            &targets[1],
+            ResolvedTarget::Container(ContainerTarget { container_name, .. }) if container_name == "api-b"
+        ));
+    }
+
+    #[test]
+    fn resolve_targets_from_entries_keeps_pid_dedup_for_non_proxy_processes() {
+        let mut first = make_entry(3000, Protocol::Tcp, State::Listen, "node");
+        first.pid = 4242;
+
+        let mut second = make_entry(4000, Protocol::Tcp, State::Listen, "node");
+        second.pid = 4242;
+
+        let targets = resolve_targets_from_entries(
+            vec![first, second],
+            PortFilter::Range {
+                start: 3000,
+                end: 4000,
+            },
+            &ContainerPortMap::default(),
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect("non-proxy pid dedup should stay intact");
+
+        assert_eq!(
+            targets.len(),
+            1,
+            "the same non-proxy pid should still be targeted once"
+        );
+        assert!(matches!(
+            &targets[0],
+            ResolvedTarget::Process(Target { pid, process }) if *pid == 4242 && process == "node"
+        ));
     }
 }
