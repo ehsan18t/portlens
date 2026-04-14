@@ -31,6 +31,8 @@ pub mod filter;
 #[doc(hidden)]
 pub mod framework;
 #[doc(hidden)]
+pub mod kill;
+#[doc(hidden)]
 pub mod project;
 #[doc(hidden)]
 pub mod types;

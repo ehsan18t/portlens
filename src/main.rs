@@ -41,6 +41,21 @@ enum Command {
         /// Only check for a new version without downloading or installing.
         check: bool,
     },
+    /// Terminate a process by port or PID.
+    Kill {
+        /// Target port: kill every process using this local port.
+        port: Option<u16>,
+        /// Target PID: kill this specific process.
+        pid: Option<u32>,
+        /// Escalate to forceful termination (SIGKILL on Unix).
+        force: bool,
+        /// Skip the interactive confirmation prompt.
+        yes: bool,
+        /// Resolve targets and report them without signaling anything.
+        dry_run: bool,
+        /// Emit the kill report as JSON.
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -74,11 +89,13 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = run(cli) {
-        eprintln!("error: {e:#}");
-        return ExitCode::from(EXIT_RUNTIME_ERROR);
+    match run(cli) {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::from(EXIT_RUNTIME_ERROR)
+        }
     }
-    ExitCode::SUCCESS
 }
 
 /// Initialize stderr logger. Reads `RUST_LOG` (default: off). Safe to call
@@ -109,12 +126,19 @@ fn normalize_args() -> Vec<OsString> {
 
 /// Parse CLI arguments into a [`Cli`] struct.
 ///
-/// Subcommands are detected by scanning for the literal token `update`;
-/// anything after it is consumed by the subcommand parser.
+/// Subcommands are detected by scanning for the first occurrence of a known
+/// subcommand token (`update`, `kill`); anything after the token is consumed
+/// by the matching subcommand parser. The earliest-occurring token wins so
+/// that `portlens kill update` is parsed as `kill` with a stray `update`
+/// argument (a usage error), not as `update` with a stray `kill` argument.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
-    let update_idx = args.iter().position(|a| a == "update");
+    let subcommand_idx = args
+        .iter()
+        .position(|a| matches!(a.to_str(), Some("update" | "kill")));
 
-    let (main_args, command) = if let Some(idx) = update_idx {
+    let (main_args, command) = if let Some(idx) = subcommand_idx
+        && args[idx] == "update"
+    {
         let main: Vec<OsString> = args[..idx].to_vec();
         let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
 
@@ -125,6 +149,43 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             bail!("unexpected arguments for 'update' subcommand: {remaining:?}");
         }
         (main, Some(Command::Update { check }))
+    } else if let Some(idx) = subcommand_idx {
+        // Must be "kill" (the only other value the scan accepts).
+        let main: Vec<OsString> = args[..idx].to_vec();
+        let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
+
+        let mut sub_pargs = pico_args::Arguments::from_vec(sub_args);
+        let port: Option<u16> = sub_pargs
+            .opt_value_from_str(["-p", "--port"])
+            .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
+        validate_port_arg(port)?;
+        let pid: Option<u32> = sub_pargs
+            .opt_value_from_str("--pid")
+            .context("invalid value for '--pid' (expected a non-negative integer)")?;
+        let force = sub_pargs.contains(["-f", "--force"]);
+        let yes = sub_pargs.contains(["-y", "--yes"]);
+        let dry_run = sub_pargs.contains("--dry-run");
+        let json = sub_pargs.contains("--json");
+        let remaining = sub_pargs.finish();
+        if !remaining.is_empty() {
+            bail!("unexpected arguments for 'kill' subcommand: {remaining:?}");
+        }
+        match (port, pid) {
+            (None, None) => bail!("'kill' requires exactly one of '--port' or '--pid'"),
+            (Some(_), Some(_)) => bail!("'--port' and '--pid' cannot be used together"),
+            _ => {}
+        }
+        (
+            main,
+            Some(Command::Kill {
+                port,
+                pid,
+                force,
+                yes,
+                dry_run,
+                json,
+            }),
+        )
     } else {
         (args, None)
     };
@@ -136,7 +197,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let listen = pargs.contains(["-l", "--listen"]);
     let port: Option<u16> = pargs
         .opt_value_from_str(["-p", "--port"])
-        .context("invalid value for '--port' (expected an integer in 0..=65535)")?;
+        .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
+    validate_port_arg(port)?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -172,6 +234,14 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     })
 }
 
+fn validate_port_arg(port: Option<u16>) -> Result<()> {
+    if port == Some(0) {
+        bail!("invalid value for '--port' (expected an integer in 1..=65535)");
+    }
+
+    Ok(())
+}
+
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
     println!("PortLens {version}");
@@ -181,6 +251,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  update  Check for updates and optionally self-update the binary");
+    println!("  kill    Terminate processes by --port or --pid");
     println!();
     println!("Options:");
     println!("  -t, --tcp            Show only TCP sockets");
@@ -198,6 +269,14 @@ fn print_help() {
     println!();
     println!("Subcommand 'update' options:");
     println!("      --check          Only check for a new version; do not install");
+    println!();
+    println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
+    println!("  -p, --port <PORT>    Kill every process using this local port");
+    println!("      --pid <PID>      Kill the given PID");
+    println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
+    println!("  -y, --yes            Skip interactive confirmation");
+    println!("      --dry-run        List targets without killing anything");
+    println!("      --json           Emit the kill report or dry-run target list as JSON");
 }
 
 fn print_version() {
@@ -205,11 +284,35 @@ fn print_version() {
 }
 
 /// Application entry point, separated from `main()` for testability.
-fn run(cli: Cli) -> Result<()> {
+///
+/// Returns the process exit code as a `u8` so subcommands (notably `kill`)
+/// can surface partial-success states (e.g. exit 3 for "nothing to kill").
+fn run(cli: Cli) -> Result<u8> {
     // Dispatch to subcommand if present
     if let Some(command) = cli.command {
         return match command {
-            Command::Update { check } => portlens::update::run(check),
+            Command::Update { check } => portlens::update::run(check).map(|()| 0),
+            Command::Kill {
+                port,
+                pid,
+                force,
+                yes,
+                dry_run,
+                json,
+            } => {
+                let target = match (port, pid) {
+                    (Some(p), None) => portlens::kill::KillTarget::Port(p),
+                    (None, Some(p)) => portlens::kill::KillTarget::Pid(p),
+                    _ => unreachable!("parse_cli enforces exactly one selector"),
+                };
+                portlens::kill::run(portlens::kill::KillOptions {
+                    target,
+                    force,
+                    yes,
+                    dry_run,
+                    json,
+                })
+            }
         };
     }
 
@@ -251,5 +354,47 @@ fn run(cli: Cli) -> Result<()> {
         display::print_tips()?;
     }
 
-    Ok(())
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parse_cli_rejects_global_port_zero() {
+        let error = parse_cli(args(&["--port", "0"]))
+            .expect_err("top-level --port 0 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            "port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_kill_port_zero() {
+        let error = parse_cli(args(&["kill", "--port", "0"]))
+            .expect_err("kill --port 0 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            "kill port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_uses_first_subcommand_token() {
+        let error = parse_cli(args(&["kill", "update"]))
+            .expect_err("kill update should be parsed as kill with a stray argument");
+
+        assert!(
+            format!("{error:#}").contains("unexpected arguments for 'kill' subcommand"),
+            "the earliest subcommand token should win"
+        );
+    }
 }

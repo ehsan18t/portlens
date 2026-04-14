@@ -47,6 +47,15 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Derive asset tag
+        id: asset-tag
+        shell: bash
+        run: |
+          asset_tag="${{ inputs.tag }}"
+          asset_tag="${asset_tag#v}"
+          asset_tag="${asset_tag#V}"
+          echo "value=$asset_tag" >> "$GITHUB_OUTPUT"
+
       # Build release binary
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -59,14 +68,14 @@ jobs:
           cp target/${{ matrix.target }}/release/portlens staging/
           cp README.md LICENSE staging/
           cd staging
-          tar czf ../portlens-${{ inputs.tag }}-${{ matrix.asset_suffix }}.tar.gz *
+          tar czf ../portlens-${{ steps.asset-tag.outputs.value }}-${{ matrix.asset_suffix }}.tar.gz *
 
       # Upload the raw executable (Windows)
       - name: Package exe
         if: matrix.archive == 'exe'
         shell: pwsh
         run: |
-          Copy-Item target/${{ matrix.target }}/release/portlens.exe portlens-${{ inputs.tag }}-${{ matrix.asset_suffix }}.exe
+          Copy-Item target/${{ matrix.target }}/release/portlens.exe portlens-${{ steps.asset-tag.outputs.value }}-${{ matrix.asset_suffix }}.exe
 
       # Build .deb package (Linux x86_64 only)
       - name: Build .deb package
@@ -74,7 +83,7 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/debian/*.deb ./portlens-${{ inputs.tag }}-amd64.deb
+          cp target/${{ matrix.target }}/debian/*.deb ./portlens-${{ steps.asset-tag.outputs.value }}-amd64.deb
 
       # Build .rpm package (Linux x86_64 only)
       - name: Build .rpm package
@@ -82,14 +91,14 @@ jobs:
         run: |
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/generate-rpm/*.rpm ./portlens-${{ inputs.tag }}-x86_64.rpm
+          cp target/${{ matrix.target }}/generate-rpm/*.rpm ./portlens-${{ steps.asset-tag.outputs.value }}-x86_64.rpm
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: release-${{ matrix.target }}
           path: |
-            portlens-${{ inputs.tag }}-*
+            portlens-${{ steps.asset-tag.outputs.value }}-*
           if-no-files-found: error
 
   release:

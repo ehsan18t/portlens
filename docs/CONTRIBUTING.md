@@ -94,6 +94,10 @@ Releases are created via the **Release** workflow (`Actions` tab):
 
 1. Go to `Actions` > `Release` > `Run workflow`.
 2. Enter the version tag (e.g. `v0.2.0`).
+  The published asset filenames intentionally drop any leading `v`, so the
+  Windows binary is uploaded as `portlens-0.2.0-x86_64.exe`, the Linux
+  archive as `portlens-0.2.0-x86_64.tar.gz`, and the package artifacts use
+  the same normalized version segment.
 3. GitHub groups auto-generated release notes using [.github/release.yml](.github/release.yml).
    Apply the appropriate PR labels before merging if you want a change to land
    in a specific section.

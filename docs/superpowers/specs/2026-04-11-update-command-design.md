@@ -21,8 +21,9 @@ All arguments (existing and new) are **case-insensitive**: `portlens UPDATE`,
 ## Version Comparison
 
 - Current version: compiled-in `env!("CARGO_PKG_VERSION")` (e.g. `0.1.0`)
-- Remote version: latest GitHub release tag (e.g. `0.1.1`) — **no `v` prefix**
-- Comparison: split on `.`, compare major/minor/patch numerically
+- Remote version: latest GitHub release tag (e.g. `0.1.1` or `v0.1.1`)
+- Comparison: strip an optional leading `v` / `V`, then compare
+  major/minor/patch numerically
 - "Up to date" when remote <= current
 
 ## GitHub API
@@ -36,11 +37,13 @@ All arguments (existing and new) are **case-insensitive**: `portlens UPDATE`,
 
 | Platform       | Asset pattern                        | Auto-update? |
 | -------------- | ------------------------------------ | ------------ |
-| Windows x86_64 | `portlens-{tag}-x86_64.exe`          | Yes          |
-| Linux x86_64   | `portlens-{tag}-x86_64.tar.gz`       | Yes*         |
+| Windows x86_64 | `portlens-{version}-x86_64.exe`      | Yes          |
+| Linux x86_64   | `portlens-{version}-x86_64.tar.gz`   | Yes*         |
 | Linux deb      | detected via `dpkg -S <binary_path>` | No - warn    |
 | Linux rpm      | detected via `rpm -qf <binary_path>` | No - warn    |
 | Other OS/arch  | -                                    | No - warn    |
+
+`version` is the normalized release tag with any leading `v` / `V` removed.
 
 *Linux tar.gz auto-update only when the binary is NOT managed by dpkg or rpm.
 
