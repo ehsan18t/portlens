@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use log::{debug, trace};
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
 use crate::framework;
@@ -104,6 +105,19 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
 
     let process = intern_process_name(context.process_names, &l.process.name);
 
+    trace!(
+        "built entry: pid={} process={} proto={} socket={} state={} user={} project={:?} app={:?} uptime_secs={:?}",
+        l.process.pid,
+        l.process.name,
+        proto,
+        l.socket,
+        state,
+        user,
+        project_name,
+        app.as_deref(),
+        uptime_secs
+    );
+
     PortEntry {
         port: l.socket.port(),
         local_addr: l.socket.ip(),
@@ -163,9 +177,19 @@ fn cached_detect_from_config(
     cache: &mut HashMap<PathBuf, Option<AppLabel>>,
 ) -> Option<AppLabel> {
     if let Some(cached) = cache.get(project_root) {
+        trace!(
+            "framework cache hit: project_root={} app={:?}",
+            project_root.display(),
+            cached.as_deref()
+        );
         return cached.clone();
     }
     let result = framework::detect_from_config(project_root);
+    debug!(
+        "framework cache miss: project_root={} detected_app={:?}",
+        project_root.display(),
+        result.as_deref()
+    );
     cache.insert(project_root.to_path_buf(), result.clone());
     result
 }

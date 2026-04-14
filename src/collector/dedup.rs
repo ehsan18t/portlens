@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use crate::types::{PortEntry, Protocol, State};
+use log::debug;
 
 /// Key for clustering Docker proxy entries.
 ///
@@ -26,6 +27,7 @@ type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<String>);
 /// rows from the same PID and then removes known Docker proxy duplicates
 /// while preserving distinct non-proxy worker processes.
 pub(super) fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    let original_len = entries.len();
     let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> =
         HashMap::with_capacity(entries.len());
 
@@ -34,13 +36,22 @@ pub(super) fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
         grouped.entry(key).or_default().push(entry);
     }
 
+    let grouped_len = grouped.len();
+
     let mut deduplicated = Vec::new();
 
     for group in grouped.into_values() {
         deduplicated.extend(deduplicate_group(group));
     }
 
-    collapse_docker_proxy_clusters(deduplicated)
+    let deduplicated = collapse_docker_proxy_clusters(deduplicated);
+    debug!(
+        "deduplication complete: input_entries={} grouped_sockets={} output_entries={}",
+        original_len,
+        grouped_len,
+        deduplicated.len()
+    );
+    deduplicated
 }
 
 fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {

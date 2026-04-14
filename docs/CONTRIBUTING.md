@@ -102,8 +102,8 @@ CLI-only and do not install a desktop entry, so shipping only an icon image
 would not surface a meaningful application icon in Linux menus.
 
 For environment-specific diagnostics while developing, run the CLI with
-`RUST_LOG=debug` to enable tracing for Docker/Podman probing and enrichment
-fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; cargo run -- --all`.
+`--trace` to enable tracing for Docker/Podman probing and enrichment
+fallbacks. Example: `cargo run -- --trace --all`.
 
 ### Releasing
 

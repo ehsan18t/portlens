@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::types::State;
+use log::debug;
 
 /// Maps a local socket address to its aggregated TCP state.
 pub(super) type TcpStateIndex = HashMap<SocketAddr, State>;
@@ -23,6 +24,7 @@ pub(super) fn load_tcp_state_index() -> TcpStateIndex {
     let mut index = TcpStateIndex::new();
     extend_linux_tcp_state_index("/proc/net/tcp", false, &mut index);
     extend_linux_tcp_state_index("/proc/net/tcp6", true, &mut index);
+    debug!("loaded linux tcp state index: entries={}", index.len());
     index
 }
 
@@ -156,6 +158,7 @@ pub(super) fn load_tcp_state_index() -> TcpStateIndex {
     if let Some(table) = read_windows_tcp_table(AF_INET6) {
         extend_windows_tcpv6_state_index(&table, &mut index);
     }
+    debug!("loaded windows tcp state index: entries={}", index.len());
     index
 }
 
@@ -297,6 +300,7 @@ fn read_windows_port(bytes: &[u8], offset: usize) -> Option<u16> {
 
 #[cfg(not(any(target_os = "linux", windows)))]
 pub(super) fn load_tcp_state_index() -> TcpStateIndex {
+    debug!("tcp state enrichment unavailable on this platform");
     TcpStateIndex::new()
 }
 

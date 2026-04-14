@@ -8,6 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::types::{PortEntry, Protocol, State, strip_windows_exe_suffix};
+use log::debug;
 
 /// A port filter that matches either a single port or an inclusive range.
 ///
@@ -181,10 +182,24 @@ fn contains_process_pattern(process: &str, pattern: &str) -> bool {
 /// functions when those filters are inactive.
 #[must_use]
 pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
+    let original_len = entries.len();
     let process_filter = opts.process.as_deref().map(strip_windows_exe_suffix);
     let grep_pattern = opts.grep.as_deref().map(normalize_grep_pattern);
     let bypass_relevance =
         opts.show_all || opts.port.is_some() || process_filter.is_some() || grep_pattern.is_some();
+
+    debug!(
+        "applying filters: input_entries={} tcp_only={} udp_only={} listen_only={} port={:?} process={:?} grep={:?} show_all={} bypass_relevance={}",
+        original_len,
+        opts.tcp_only,
+        opts.udp_only,
+        opts.listen_only,
+        opts.port,
+        process_filter,
+        grep_pattern.as_deref(),
+        opts.show_all,
+        bypass_relevance
+    );
 
     entries.retain(|e| {
         if opts.tcp_only && e.proto != Protocol::Tcp {
@@ -215,6 +230,11 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
         entries.retain(|e| contains_process_pattern(&e.process, pattern));
     }
 
+    debug!(
+        "filtering complete: input_entries={} output_entries={}",
+        original_len,
+        entries.len()
+    );
     entries
 }
 

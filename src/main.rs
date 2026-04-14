@@ -8,6 +8,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
+use log::{debug, trace};
 use portlens::filter::PortFilter;
 use portlens::{collector, display, filter};
 
@@ -15,6 +16,8 @@ use portlens::{collector, display, filter};
 const EXIT_RUNTIME_ERROR: u8 = 1;
 /// Exit code for CLI usage errors (invalid flags, conflicting options).
 const EXIT_USAGE_ERROR: u8 = 2;
+
+static STDERR_TRACE_LOGGER: StderrTraceLogger = StderrTraceLogger;
 
 /// Parsed command-line arguments.
 // CLI structs inherently use multiple boolean flags for argument toggling.
@@ -33,6 +36,7 @@ struct Cli {
     no_header: bool,
     json: bool,
     no_enrich: bool,
+    trace: bool,
     command: Option<Command>,
 }
 
@@ -71,9 +75,12 @@ impl Command {
 }
 
 fn main() -> ExitCode {
-    init_logger();
-
     let args = normalize_args();
+    // Check for --trace early (before parsing) so diagnostic output
+    // covers the entire argument validation flow.
+    let trace_enabled = args.iter().any(|a| a.to_str() == Some("--trace"));
+    init_logger(trace_enabled);
+    debug!("startup: trace_enabled={trace_enabled} args={args:?}");
 
     // Handle --help / --version before the parser so they short-circuit
     // even when combined with otherwise-invalid flags.
@@ -94,6 +101,7 @@ fn main() -> ExitCode {
     let cli = match parse_cli(args) {
         Ok(cli) => cli,
         Err(e) => {
+            debug!("cli parsing failed: {e:#}");
             eprintln!("error: {e:#}");
             eprintln!();
             eprintln!("Try 'portlens --help' for more information.");
@@ -104,18 +112,42 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
+            debug!("runtime failed: {e:#}");
             eprintln!("error: {e:#}");
             ExitCode::from(EXIT_RUNTIME_ERROR)
         }
     }
 }
 
-/// Initialize stderr logger. Reads `RUST_LOG` (default: off). Safe to call
-/// once; `try_init` silently ignores duplicate initialization if it occurs.
-fn init_logger() {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off"))
-        .target(env_logger::Target::Stderr)
-        .try_init();
+/// Initialize the global stderr logger.
+///
+/// When `trace` is true, emits all `log::debug!` and above to stderr.
+/// When false, logging is completely silent (the `log` facade compiles
+/// away to no-ops when no logger is installed).
+fn init_logger(trace: bool) {
+    if trace && log::set_logger(&STDERR_TRACE_LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Trace);
+    }
+}
+
+/// Minimal logger that writes every enabled record to stderr.
+///
+/// Format: `[LEVEL module] message`
+struct StderrTraceLogger;
+
+impl log::Log for StderrTraceLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let module = record.module_path().unwrap_or("-");
+            eprintln!("[{} {module}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 /// Normalize CLI arguments to lowercase for case-insensitive matching.
@@ -255,6 +287,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
     let no_header = pargs.contains("--no-header");
     let json = pargs.contains("--json");
     let no_enrich = pargs.contains("--no-enrich");
+    let trace = pargs.contains("--trace");
 
     validate_main_flag_conflicts(tcp, udp, listen, process.as_deref(), grep.as_deref())?;
 
@@ -276,6 +309,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
         no_header,
         json,
         no_enrich,
+        trace,
         command,
     })
 }
@@ -346,6 +380,7 @@ fn print_help() {
     println!("      --no-header      Suppress the column header row");
     println!("      --json           Output results as a JSON array");
     println!("      --no-enrich      Disable Docker/Podman and project-root enrichment");
+    println!("      --trace          Emit diagnostic trace to stderr for debugging");
     println!("  -h, --help           Print help");
     println!("  -v, --version        Print version");
     println!();
@@ -373,8 +408,27 @@ fn print_version() {
 /// Returns the process exit code as a `u8` so subcommands (notably `kill`)
 /// can surface partial-success states (e.g. exit 3 for "nothing to kill").
 fn run(cli: Cli) -> Result<u8> {
+    debug!(
+        "cli parsed: tcp={} udp={} listen={} port={:?} process={:?} grep={:?} all={} full={} compact={} no_header={} json={} no_enrich={} trace={} command={:?}",
+        cli.tcp,
+        cli.udp,
+        cli.listen,
+        cli.port,
+        cli.process,
+        cli.grep,
+        cli.all,
+        cli.full,
+        cli.compact,
+        cli.no_header,
+        cli.json,
+        cli.no_enrich,
+        cli.trace,
+        cli.command.as_ref().map(Command::name)
+    );
+
     // Dispatch to subcommand if present
     if let Some(command) = cli.command {
+        debug!("dispatching subcommand: {}", command.name());
         return match command {
             Command::Update { check } => portlens::update::run(check).map(|()| 0),
             Command::Kill {
@@ -404,6 +458,8 @@ fn run(cli: Cli) -> Result<u8> {
     let entries = collector::collect_with_options(&collector::CollectOptions {
         deep_enrichment: !cli.no_enrich,
     })?;
+    debug!("collected {} raw entries before filtering", entries.len());
+
     let filtered = filter::apply(
         entries,
         &filter::FilterOptions {
@@ -416,10 +472,19 @@ fn run(cli: Cli) -> Result<u8> {
             show_all: cli.all,
         },
     );
+    debug!("filter pass complete: {} entries surviving", filtered.len());
 
     if cli.json {
+        debug!("rendering json output: entries={}", filtered.len());
         display::print_json(&filtered)?;
     } else {
+        debug!(
+            "rendering table output: entries={} full={} compact={} show_header={}",
+            filtered.len(),
+            cli.full,
+            cli.compact,
+            !cli.no_header
+        );
         display::print_table(
             &filtered,
             &display::DisplayOptions {
@@ -438,9 +503,11 @@ fn run(cli: Cli) -> Result<u8> {
     }
 
     if !cli.json && std::io::stdout().is_terminal() {
+        trace!("printing interactive tips footer");
         display::print_tips()?;
     }
 
+    debug!("run completed successfully");
     Ok(0)
 }
 

@@ -271,7 +271,7 @@ based on available width.
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
 
-**Debug diagnostics:** Set `RUST_LOG=debug` in your shell before running PortLens to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; portlens --all`. This stays off by default.
+**Debug diagnostics:** Pass `--trace` to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks to stderr. Example: `portlens --trace --all`. This flag is off by default.
 
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. When a proxy-owned listener matches multiple distinct containers on the same `port + protocol`, PortLens now leaves the row unenriched instead of guessing. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
 
@@ -287,7 +287,7 @@ When stderr is attached to a terminal, PortLens warns at runtime if it detects t
 
 Deep enrichment may inspect executable paths, working directories, and absolute command-line paths to infer project roots. Use `--no-enrich` if you want to skip that extra metadata collection.
 
-For environment-specific debugging, enable tracing with `RUST_LOG=debug` and rerun the command. That surfaces Docker/Podman probe failures and `/proc`-based enrichment misses on stderr.
+For environment-specific debugging, run with `--trace` to emit diagnostic output to stderr. That surfaces Docker/Podman probe failures and enrichment misses.
 
 ---
 

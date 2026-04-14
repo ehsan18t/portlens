@@ -10,6 +10,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use log::debug;
+
 #[cfg(unix)]
 use std::ffi::CStr;
 #[cfg(unix)]
@@ -103,15 +105,26 @@ pub fn detect_project_root(
     if let Some(cwd) = cwd
         && let Some(root) = find_from_dir(cwd, home)
     {
+        debug!(
+            "project root detected via cwd: cwd={} root={}",
+            cwd.display(),
+            root.display()
+        );
         return Some(root);
     }
 
     for parent in absolute_cmd_parents(cmd) {
         if let Some(root) = find_from_dir(parent, home) {
+            debug!(
+                "project root detected via cmd path: parent={} root={}",
+                parent.display(),
+                root.display()
+            );
             return Some(root);
         }
     }
 
+    debug!("no project root detected");
     None
 }
 
@@ -147,7 +160,15 @@ pub(crate) fn absolute_cmd_parents<'a, S: AsRef<OsStr> + 'a>(
 /// checks command-line arguments.
 #[must_use]
 pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
-    walk_ancestors(start, home).find(|dir| has_marker(dir))
+    let result = walk_ancestors(start, home).find(|dir| has_marker(dir));
+    if let Some(ref root) = result {
+        debug!(
+            "found project marker: start={} root={}",
+            start.display(),
+            root.display()
+        );
+    }
+    result
 }
 
 /// Return the current user's home directory, if it can be determined.

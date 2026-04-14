@@ -15,6 +15,7 @@ mod resolve;
 use std::io::{BufRead, IsTerminal, Write};
 
 use anyhow::{Result, bail};
+use log::debug;
 
 use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
@@ -56,9 +57,14 @@ pub struct KillOptions {
 /// Errors propagate only for unexpected conditions such as socket enumeration
 /// failure or stdout/stderr write failure.
 pub fn run(opts: &KillOptions) -> Result<u8> {
+    debug!(
+        "kill run: target={:?} force={} yes={} dry_run={} json={}",
+        opts.target, opts.force, opts.yes, opts.dry_run, opts.json
+    );
     let targets = resolve_targets(opts)?;
 
     if targets.is_empty() {
+        debug!("no kill targets resolved for selector");
         let msg = match &opts.target {
             KillTarget::Port(f) => {
                 format!("no TCP listener or UDP binder is using local port {f}")
@@ -70,6 +76,8 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
     }
 
     reject_protected_pids(&targets)?;
+
+    debug!("resolved {} kill target(s)", targets.len());
 
     if !opts.yes && !opts.dry_run && std::io::stdin().is_terminal() && !confirm(&targets, opts)? {
         eprintln!("aborted");
@@ -104,10 +112,18 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
 fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
     match target {
         ResolvedTarget::Process(t) => {
+            debug!(
+                "killing process: pid={} process={} force={force}",
+                t.pid, t.process
+            );
             let outcome = kill_pid(t.pid, force);
             KillReportEntry::from_outcome(t.pid, t.process, outcome)
         }
         ResolvedTarget::Container(ct) => {
+            debug!(
+                "stopping container: id={} name={} force={force}",
+                ct.container_id, ct.container_name
+            );
             let outcome = crate::docker::stop_container(&ct.container_id, force);
             KillReportEntry::from_container_outcome(ct, outcome)
         }

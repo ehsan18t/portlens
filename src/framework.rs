@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::Path;
 
+use log::debug;
+
 use crate::docker::ContainerInfo;
 use crate::types::AppLabel;
 
@@ -129,6 +131,10 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<AppLabel> {
         _ => None,
     }?;
 
+    debug!(
+        "app detected from image: container={} image={} app={}",
+        info.name, info.image, label
+    );
     Some(Cow::Borrowed(label))
 }
 
@@ -238,10 +244,17 @@ const PYTHON_DEPENDENCY_PATTERNS: &[(&str, &str)] = &[
 pub fn detect_from_config(project_root: &Path) -> Option<AppLabel> {
     let files = ProjectFiles::read(project_root)?;
 
-    detect_from_config_patterns(&files)
+    let result = detect_from_config_patterns(&files)
         .or_else(|| detect_python_project(project_root, &files))
         .or_else(|| detect_rack_project(&files))
-        .or_else(|| detect_from_config_extensions(&files))
+        .or_else(|| detect_from_config_extensions(&files));
+
+    debug!(
+        "app detection from config: project_root={} app={:?}",
+        project_root.display(),
+        result.as_deref()
+    );
+    result
 }
 
 fn detect_from_config_patterns(files: &ProjectFiles) -> Option<AppLabel> {
@@ -465,10 +478,14 @@ const PROCESS_MAP: &[(&str, &str)] = &[
 #[must_use]
 pub fn detect_from_process(process_name: &str) -> Option<AppLabel> {
     let name = crate::types::strip_windows_exe_suffix(process_name);
-    PROCESS_MAP
+    let result = PROCESS_MAP
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key))
-        .map(|(_, label)| Cow::Borrowed(*label))
+        .map(|(_, label)| Cow::Borrowed(*label));
+    if let Some(ref app) = result {
+        debug!("app detected from process: process={process_name} app={app}");
+    }
+    result
 }
 
 #[cfg(test)]

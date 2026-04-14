@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output};
 
 use anyhow::{Context, Result, bail};
+use log::debug;
 
 /// GitHub repository owner.
 const REPO_OWNER: &str = "ehsan18t";
@@ -36,6 +37,7 @@ const REPO_NAME: &str = "portlens";
 /// the result without downloading or replacing anything.
 pub fn run(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
+    debug!("update check: current_version={current} check_only={check_only}");
     let Some(release) = check_for_update(current)? else {
         return Ok(());
     };
@@ -68,7 +70,9 @@ fn check_for_update(current: &str) -> Result<Option<Release>> {
 }
 
 fn is_update_available(current: &str, remote: &str) -> bool {
-    compare_versions(current, remote) == Ordering::Less
+    let available = compare_versions(current, remote) == Ordering::Less;
+    debug!("version comparison: current={current} remote={remote} update_available={available}");
+    available
 }
 
 fn print_up_to_date(current: &str) {
