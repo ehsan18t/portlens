@@ -38,6 +38,7 @@ use crate::types::Protocol;
 // `parse_containers_json` is consumed by the criterion benchmark harness;
 // everything else is crate-private enrichment plumbing.
 pub use api::parse_containers_json;
+pub use api::short_container_id;
 #[cfg(target_os = "linux")]
 pub(crate) use podman::is_podman_rootlessport_process;
 #[cfg(target_os = "linux")]

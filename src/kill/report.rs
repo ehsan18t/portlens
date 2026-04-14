@@ -96,7 +96,7 @@ impl KillReportEntry {
             process: ct.proxy_process,
             status,
             hint,
-            container_id: Some(short_id(&ct.container_id)),
+            container_id: Some(crate::docker::short_container_id(&ct.container_id)),
             container_name: Some(ct.container_name),
             port: Some(ct.port),
         }
@@ -115,7 +115,7 @@ impl KillReportEntry {
             process: ct.proxy_process.clone(),
             status,
             hint: None,
-            container_id: Some(short_id(&ct.container_id)),
+            container_id: Some(crate::docker::short_container_id(&ct.container_id)),
             container_name: Some(ct.container_name.clone()),
             port: Some(ct.port),
         }
@@ -139,11 +139,6 @@ const fn elevation_hint() -> &'static str {
 #[cfg(not(windows))]
 const fn elevation_hint() -> &'static str {
     "retry with sudo or as the process owner"
-}
-
-/// Truncate a container ID to the first 12 hex characters.
-fn short_id(id: &str) -> String {
-    id.get(..12).unwrap_or(id).to_string()
 }
 
 /// Render a human-readable report to stdout.

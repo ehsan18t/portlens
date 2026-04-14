@@ -130,7 +130,7 @@ fn normalize_container_name(name: &str) -> Option<String> {
 /// Docker/Podman container IDs are hex-encoded (ASCII-only), so byte
 /// length equals character count and a byte slice is safe.
 #[must_use]
-pub(super) fn short_container_id(id: &str) -> String {
+pub fn short_container_id(id: &str) -> String {
     id.get(..12).unwrap_or(id).to_string()
 }
 
