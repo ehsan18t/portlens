@@ -7,8 +7,10 @@
 //! stray marker files (e.g. an accidental `package.json` in `~`), and
 //! is capped at `MAX_WALK_DEPTH` levels as a safety net.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use log::debug;
 
@@ -18,21 +20,25 @@ use std::ffi::CStr;
 use std::os::unix::ffi::OsStrExt;
 
 /// Files whose presence indicates a project root directory.
-const PROJECT_MARKERS: &[&str] = &[
-    "package.json",
-    "Cargo.toml",
-    "go.mod",
-    "pyproject.toml",
-    "requirements.txt",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "composer.json",
-    "Gemfile",
-    "mix.exs",
-    "deno.json",
-    "bun.lockb",
-];
+///
+/// Stored as a `HashSet` for O(1) lookups when scanning directory entries.
+static PROJECT_MARKERS: LazyLock<HashSet<&str>> = LazyLock::new(|| {
+    HashSet::from([
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "requirements.txt",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "composer.json",
+        "Gemfile",
+        "mix.exs",
+        "deno.json",
+        "bun.lockb",
+    ])
+});
 
 /// File extensions whose presence indicates a project root directory.
 const PROJECT_MARKER_EXTENSIONS: &[&str] = &["csproj", "fsproj"];
@@ -255,7 +261,7 @@ pub(crate) fn has_marker(dir: &Path) -> bool {
             return false;
         };
 
-        PROJECT_MARKERS.contains(&name)
+        PROJECT_MARKERS.contains(name)
             || Path::new(name)
                 .extension()
                 .and_then(OsStr::to_str)
