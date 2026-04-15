@@ -92,7 +92,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.
     let docker_handle = if options.deep_enrichment {
-        Some(docker::start_detection())
+        Some(docker::start_detection(project::home_dir()))
     } else {
         None
     };

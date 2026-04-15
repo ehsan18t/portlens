@@ -59,7 +59,7 @@ pub enum ResolvedTarget {
 /// Otherwise it produces a regular process [`Target`].
 pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // Start Docker detection early so it overlaps with socket enumeration.
-    let docker_handle = docker::start_detection();
+    let docker_handle = docker::start_detection(crate::project::home_dir());
 
     let entries = collector::collect_with_options(&CollectOptions {
         deep_enrichment: false,

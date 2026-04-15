@@ -14,25 +14,8 @@ use serde::Serialize;
 /// future runtime-generated labels without changing the data model.
 pub type AppLabel = Cow<'static, str>;
 
-/// Protocol type for a socket entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub enum Protocol {
-    /// Transmission Control Protocol.
-    #[serde(rename = "TCP")]
-    Tcp,
-    /// User Datagram Protocol.
-    #[serde(rename = "UDP")]
-    Udp,
-}
-
-impl std::fmt::Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "TCP"),
-            Self::Udp => write!(f, "UDP"),
-        }
-    }
-}
+/// Re-exported from [`nanodock`] - network transport protocol (TCP/UDP).
+pub use nanodock::Protocol;
 
 /// Connection state for a socket entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]

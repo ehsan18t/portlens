@@ -25,7 +25,7 @@ pub mod collector;
 #[doc(hidden)]
 pub mod display;
 #[doc(hidden)]
-pub mod docker;
+pub use nanodock as docker;
 #[doc(hidden)]
 pub mod filter;
 #[doc(hidden)]

@@ -35,7 +35,7 @@ anyhow = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 log = "0.4"
-httparse = { version = "1", default-features = false }
+nanodock = { path = "../nanodock" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
