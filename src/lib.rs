@@ -17,8 +17,7 @@
 //!   - `tips` — "Quick Actions" footer panel with adaptive layout
 //!   - `terminal` — terminal width detection and UTF-8 support probing
 //! - [`docker`] - Docker/Podman container detection via socket API
-//! - [`project`] - project root detection via marker file walk
-//! - [`framework`] - app/framework detection from images, configs, process names
+//! - `what-stack` - external crate used for project root and app/framework detection
 
 #[doc(hidden)]
 pub mod collector;
@@ -29,11 +28,7 @@ pub use nanodock as docker;
 #[doc(hidden)]
 pub mod filter;
 #[doc(hidden)]
-pub mod framework;
-#[doc(hidden)]
 pub mod kill;
-#[doc(hidden)]
-pub mod project;
 #[doc(hidden)]
 pub mod types;
 #[doc(hidden)]

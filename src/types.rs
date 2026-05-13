@@ -2,7 +2,6 @@
 //!
 //! Contains the [`PortEntry`] struct used across all modules.
 
-use std::borrow::Cow;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use serde::Serialize;
 ///
 /// Most detections use borrowed string literals, but `Cow` leaves room for
 /// future runtime-generated labels without changing the data model.
-pub type AppLabel = Cow<'static, str>;
+pub type AppLabel = what_stack::StackLabel;
 
 /// Re-exported from [`nanodock`] - network transport protocol (TCP/UDP).
 pub use nanodock::Protocol;

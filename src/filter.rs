@@ -104,9 +104,9 @@ pub struct FilterOptions {
 ///
 /// An entry is relevant if collection already attached a project or app label.
 ///
-/// Because [`crate::collector::build_entry`] calls
-/// `framework::detect` -- which includes a process-name fallback --
-/// the `app` field is already populated when the process is known.
+/// Because the collector calls `what-stack` -- which includes a
+/// process-name fallback -- the `app` field is already populated when
+/// the process is known.
 /// Checking `project` or `app` alone is sufficient; a redundant
 /// re-scan of the process map is not needed.
 const fn is_relevant(entry: &PortEntry) -> bool {
@@ -470,7 +470,7 @@ mod tests {
     fn relevance_filter_keeps_entry_with_app_from_known_process() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "node".into();
-        // The collector populates `app` via framework::detect for known processes.
+        // The collector populates `app` via what-stack for known processes.
         entry.app = Some("Node.js".into());
         assert_relevance_passes(entry, "entry with app label from node should pass");
     }
@@ -501,7 +501,7 @@ mod tests {
     fn relevance_filter_recognizes_app_from_exe_suffix() {
         let mut entry = make_entry(80, Protocol::Tcp, State::Listen);
         entry.process = "nginx.exe".into();
-        // The collector populates `app` via framework::detect for known processes.
+        // The collector populates `app` via what-stack for known processes.
         entry.app = Some("Nginx".into());
         assert_relevance_passes(entry, "entry with app from nginx.exe should pass");
     }
@@ -510,7 +510,7 @@ mod tests {
     fn relevance_filter_recognizes_app_from_capitalized_name() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "Python".into();
-        // The collector populates `app` via framework::detect for known processes.
+        // The collector populates `app` via what-stack for known processes.
         entry.app = Some("Python".into());
         let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app from Python should pass");

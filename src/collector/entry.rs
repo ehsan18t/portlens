@@ -4,14 +4,13 @@
 //! sysinfo, queries the caches in [`CollectContext`], and assembles the
 //! final enrichment fields (container, project, framework, uptime).
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
-use log::{debug, trace};
+use log::trace;
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
-use crate::framework;
 use crate::types::{AppLabel, PortEntry, Protocol, State};
 
 use super::CollectContext;
@@ -66,17 +65,17 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
             || {
                 let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
                 let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
-                let root = resolve::lookup_project_root(
-                    cwd,
-                    exe_path,
-                    cmd,
-                    context.project_cache,
-                    context.home,
-                );
-                let name = root
-                    .as_ref()
-                    .and_then(|r| r.file_name())
-                    .map(|n| n.to_string_lossy().into_owned());
+                let root = context
+                    .stack_detector
+                    .detect_project_root(what_stack::ProjectInput {
+                        cwd,
+                        exe: exe_path,
+                        cmd,
+                        home: context.home,
+                    });
+                let name = root.as_ref().and_then(|root| {
+                    what_stack::project_name(root).map(std::borrow::Cow::into_owned)
+                });
                 (name, root)
             },
             |c| (Some(c.name.clone()), None),
@@ -94,7 +93,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
             &l.process.name,
             exe_name,
             exe_path,
-            context.framework_cache,
+            context.stack_detector,
         )
     } else {
         detect_process_app(&l.process.name, exe_name)
@@ -149,66 +148,20 @@ fn detect_enriched_app(
     process_name: &str,
     exe_name: Option<&str>,
     exe_path: Option<&Path>,
-    framework_cache: &mut HashMap<PathBuf, Option<AppLabel>>,
+    stack_detector: &mut what_stack::StackDetector,
 ) -> Option<AppLabel> {
-    if let Some(info) = container
-        && let Some(label) = framework::detect_from_image(info)
-    {
-        return Some(label);
-    }
-
-    let process_app = detect_process_app(process_name, exe_name);
-
-    if let Some(root) = project_root
-        && config_detection_allowed(process_app.as_deref(), exe_path, root)
-        && let Some(label) = cached_detect_from_config(root, framework_cache)
-    {
-        return Some(label);
-    }
-
-    process_app
-}
-
-/// Look up the framework config detection result in the cache, or compute
-/// and store it on a cache miss. Avoids redundant `read_dir` and file I/O
-/// when multiple entries share the same project root.
-fn cached_detect_from_config(
-    project_root: &Path,
-    cache: &mut HashMap<PathBuf, Option<AppLabel>>,
-) -> Option<AppLabel> {
-    if let Some(cached) = cache.get(project_root) {
-        trace!(
-            "framework cache hit: project_root={} app={:?}",
-            project_root.display(),
-            cached.as_deref()
-        );
-        return cached.clone();
-    }
-    let result = framework::detect_from_config(project_root);
-    debug!(
-        "framework cache miss: project_root={} detected_app={:?}",
-        project_root.display(),
-        result.as_deref()
-    );
-    cache.insert(project_root.to_path_buf(), result.clone());
-    result
+    stack_detector.detect_stack(what_stack::StackInput {
+        image: container.map(|info| info.image.as_str()),
+        project_root,
+        process_name,
+        exe_name,
+        exe_path,
+    })
 }
 
 fn detect_process_app(process_name: &str, exe_name: Option<&str>) -> Option<AppLabel> {
-    framework::detect_from_process(process_name)
-        .or_else(|| exe_name.and_then(framework::detect_from_process))
-}
-
-fn config_detection_allowed(
-    process_app: Option<&str>,
-    exe_path: Option<&Path>,
-    project_root: &Path,
-) -> bool {
-    process_app.is_some() || executable_belongs_to_project(exe_path, project_root)
-}
-
-fn executable_belongs_to_project(exe_path: Option<&Path>, project_root: &Path) -> bool {
-    exe_path.is_some_and(|path| path.starts_with(project_root))
+    what_stack::detect_from_process(process_name)
+        .or_else(|| exe_name.and_then(what_stack::detect_from_process))
 }
 
 fn resolve_state(
@@ -363,6 +316,7 @@ mod tests {
     fn detect_enriched_app_uses_config_for_known_runtime_processes() {
         let project = TempDir::new().unwrap();
         fs::write(project.path().join("next.config.js"), "").unwrap();
+        let mut detector = what_stack::StackDetector::new(None);
 
         let app = detect_enriched_app(
             None,
@@ -370,7 +324,7 @@ mod tests {
             "node",
             None,
             None,
-            &mut HashMap::new(),
+            &mut detector,
         );
 
         assert_eq!(app.as_deref(), Some("Next.js"));
@@ -388,6 +342,7 @@ mod tests {
         fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
         fs::write(project.path().join("Cargo.toml"), "").unwrap();
         fs::write(&exe_path, "").unwrap();
+        let mut detector = what_stack::StackDetector::new(None);
 
         let app = detect_enriched_app(
             None,
@@ -395,7 +350,7 @@ mod tests {
             "service.exe",
             Some("service.exe"),
             Some(exe_path.as_path()),
-            &mut HashMap::new(),
+            &mut detector,
         );
 
         assert_eq!(app.as_deref(), Some("Rust"));
@@ -409,6 +364,7 @@ mod tests {
 
         fs::write(project.path().join("Cargo.toml"), "").unwrap();
         fs::write(&exe_path, "").unwrap();
+        let mut detector = what_stack::StackDetector::new(None);
 
         let app = detect_enriched_app(
             None,
@@ -416,7 +372,7 @@ mod tests {
             "pwsh.exe",
             Some("pwsh.exe"),
             Some(exe_path.as_path()),
-            &mut HashMap::new(),
+            &mut detector,
         );
 
         assert_eq!(

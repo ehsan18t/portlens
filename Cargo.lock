@@ -500,6 +500,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "what-stack",
  "winresource",
 ]
 
@@ -900,6 +901,12 @@ dependencies = [
  "wasm-bindgen",
 ]
 
+[[package]]
+name = "what-stack"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 [[package]]
 name = "winapi"
 version = "0.3.9"

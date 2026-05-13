@@ -125,7 +125,7 @@ fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
                 ct.container_id, ct.container_name
             );
             let outcome =
-                crate::docker::stop_container(&ct.container_id, force, crate::project::home_dir());
+                crate::docker::stop_container(&ct.container_id, force, what_stack::home_dir());
             KillReportEntry::from_container_outcome(ct, outcome)
         }
     }

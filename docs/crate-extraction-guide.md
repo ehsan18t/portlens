@@ -13,9 +13,9 @@ Extracted to `../nanodock/`. See that crate's README for details.
 
 ---
 
-## 2. Framework Detection -> `what-stack`
+## 2. Framework + Project Detection -> `what-stack` (DONE)
 
-**Source:** `src/framework.rs` (~600 lines)
+**Source:** `../what-stack/`
 
 **What it does:**
 Detects what application, framework, or technology stack is associated
@@ -58,18 +58,17 @@ with a process/project/container. Three detection strategies:
   module - could be replaced with a simple `&str` image parameter
 
 **Extraction notes:**
-- Near-zero external dependencies, making it an ideal standalone crate
-- Replace `detect_from_image(info: &ContainerInfo)` with
-  `detect_from_image(image: &str)` to remove the docker coupling
-- `AppLabel` type alias can live in the new crate
-- `ProjectFiles` struct and all detection logic are fully self-contained
-- Could be useful for any tool that needs to identify project stacks
+- Extracted as a standalone library crate in `../what-stack/`.
+- PortLens now passes plain image strings, paths, process names, executable
+  paths, and command arguments into `what-stack`.
+- PortLens-specific socket collection, filtering, display, kill logic, and
+  container runtime probing remain in PortLens / `nanodock`.
 
 ---
 
-## 3. Project Root Detection -> standalone crate
+## 3. Project Root Detection -> `what-stack` (DONE)
 
-**Source:** `src/project.rs` (~400 lines)
+**Source:** `../what-stack/`
 
 **What it does:**
 Walks upward from a starting directory to find the project root by
@@ -103,12 +102,9 @@ pyproject.toml, pom.xml, build.gradle, Gemfile, etc.). Also provides
 - `kill/resolve.rs` calls `home_dir()`
 
 **Extraction notes:**
-- Completely self-contained with zero coupling to other portlens modules
-- Only external dep is `libc` for Unix home dir resolution
-- The `home_dir()` function alone is valuable as a robust cross-platform
-  home directory resolver (handles sudo, passwd DB, USERPROFILE)
-- Could split into two crates or keep together: project-root-finding
-  + home-dir resolution
+- Project root detection moved into `what-stack` alongside stack detection.
+- The Unix `libc` home-directory behavior was preserved in `what-stack`.
+- PortLens uses `what_stack::StackDetector` for cached project/config lookup.
 
 ---
 

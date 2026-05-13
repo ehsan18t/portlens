@@ -138,8 +138,6 @@ src/
   docker/        — Docker/Podman daemon transport and port matching
   kill/          — process/container target resolution and termination
   update.rs      — GitHub release checking and self-update logic
-  framework.rs   — app/framework detection from images, configs, processes
-  project.rs     — project root detection via cwd/cmd marker walk
 ```
 
 ### Architecture Boundaries
@@ -149,7 +147,8 @@ src/
 - `filter.rs` owns all filtering logic.
 - The `display/` module owns all rendering logic.
 - The `docker/` module owns container daemon communication and port matching.
-- `framework.rs` and `project.rs` provide best-effort enrichment only.
+- The sibling `what-stack` crate provides best-effort project and stack
+  enrichment.
 - The `kill/` module owns target resolution and termination flows.
 
 Interactive table output also emits a shortcut footer on stderr. Preserve that
