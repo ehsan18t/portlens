@@ -14,7 +14,7 @@ use super::render::{
     reduce_widths_to_fit, render_border_line, render_bordered_cells, rendered_table_width,
     truncate_to_width, utf8_border_style,
 };
-use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
+use super::terminal::{stdout_supports_utf8_borders, stdout_terminal_width};
 use super::{DisplayOptions, sanitize_for_terminal};
 
 /// Maximum display width for the process name column before truncation.
@@ -86,7 +86,7 @@ pub(super) fn write_table_with_width(
     if use_compact {
         write_compact_table(writer, columns, &rows, &widths, opts.show_header)?;
     } else {
-        let style = if terminal_supports_utf8_borders() {
+        let style = if stdout_supports_utf8_borders() {
             utf8_border_style()
         } else {
             ascii_border_style()

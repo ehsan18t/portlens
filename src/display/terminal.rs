@@ -11,6 +11,15 @@ enum TerminalStream {
     Stderr,
 }
 
+impl TerminalStream {
+    fn is_terminal(self) -> bool {
+        match self {
+            Self::Stdout => io::stdout().is_terminal(),
+            Self::Stderr => io::stderr().is_terminal(),
+        }
+    }
+}
+
 pub(super) fn stdout_terminal_width() -> Option<usize> {
     terminal_width(TerminalStream::Stdout)
 }
@@ -19,8 +28,42 @@ pub(super) fn stderr_terminal_width() -> Option<usize> {
     terminal_width(TerminalStream::Stderr)
 }
 
+/// Whether box-drawing borders are safe for the table on stdout.
+// Const-eligible only on non-Windows, where the check is a constant `true`.
+#[cfg_attr(not(windows), allow(clippy::missing_const_for_fn))]
+pub(super) fn stdout_supports_utf8_borders() -> bool {
+    terminal_supports_utf8_borders(TerminalStream::Stdout)
+}
+
+/// Whether box-drawing borders are safe for the tips panel on stderr.
+// Const-eligible only on non-Windows, where the check is a constant `true`.
+#[cfg_attr(not(windows), allow(clippy::missing_const_for_fn))]
+pub(super) fn stderr_supports_utf8_borders() -> bool {
+    terminal_supports_utf8_borders(TerminalStream::Stderr)
+}
+
+/// Width available on `stream`, or `None` for unlimited.
+///
+/// Output that is redirected to a file or pipe is never truncated: `COLUMNS`
+/// is honoured only when the stream is a terminal. Shells and CI runners
+/// sometimes export `COLUMNS`, and there is no way to tell that apart from a
+/// deliberate setting, so trusting it for piped output could silently cut
+/// process names out of `portlens | grep ...`.
 fn terminal_width(stream: TerminalStream) -> Option<usize> {
-    env_terminal_width().or_else(|| platform_terminal_width(stream))
+    resolve_width(stream.is_terminal(), env_terminal_width, || {
+        platform_terminal_width(stream)
+    })
+}
+
+fn resolve_width(
+    is_terminal: bool,
+    columns: impl FnOnce() -> Option<usize>,
+    platform: impl FnOnce() -> Option<usize>,
+) -> Option<usize> {
+    if !is_terminal {
+        return None;
+    }
+    columns().or_else(platform)
 }
 
 fn env_terminal_width() -> Option<usize> {
@@ -114,19 +157,25 @@ fn platform_terminal_width(_stream: TerminalStream) -> Option<usize> {
     None
 }
 
-/// Check whether the terminal can display UTF-8 box-drawing characters.
+/// Check whether `stream` can display UTF-8 box-drawing characters.
 ///
 /// On Windows the check uses several heuristics (cheapest first):
 ///
-/// 1. **Windows Terminal** -- the `WT_SESSION` environment variable is
+/// 1. **Console code page** -- a code page of 65001 means the console is
+///    in explicit UTF-8 mode, so even redirected output is decoded as UTF-8
+///    by shells that read it with the console encoding.
+/// 2. **Redirection** -- when the stream is a file or pipe, the bytes are
+///    decoded by whoever reads them. Windows `PowerShell` 5.1 decodes native
+///    output with the console's legacy code page, so box-drawing characters
+///    in `portlens > out.txt` turn into mojibake. Redirected output uses
+///    ASCII borders unless the code page is UTF-8.
+/// 3. **Windows Terminal** -- the `WT_SESSION` environment variable is
 ///    set by Windows Terminal, which always supports UTF-8.
-/// 2. **Console code page** -- a code page of 65001 means the console is
-///    in explicit UTF-8 mode.
-/// 3. **Windows version** -- Windows 10 and newer (major >= 10) render
+/// 4. **Windows version** -- Windows 10 and newer (major >= 10) render
 ///    UTF-8 box-drawing correctly in virtually all terminal emulators.
 ///    Older releases (Windows 7/8) fall back to ASCII.
 #[cfg(windows)]
-pub(super) fn terminal_supports_utf8_borders() -> bool {
+fn terminal_supports_utf8_borders(stream: TerminalStream) -> bool {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetConsoleOutputCP() -> u32;
@@ -134,19 +183,33 @@ pub(super) fn terminal_supports_utf8_borders() -> bool {
 
     const UTF8_CODE_PAGE: u32 = 65001;
 
-    // Windows Terminal always supports UTF-8 box-drawing.
-    if std::env::var_os("WT_SESSION").is_some() {
-        return true;
-    }
-
     // Safety: `GetConsoleOutputCP` is a simple syscall with no preconditions.
-    if (unsafe { GetConsoleOutputCP() }) == UTF8_CODE_PAGE {
+    // It returns 0 when the process has no console at all.
+    let utf8_code_page = (unsafe { GetConsoleOutputCP() }) == UTF8_CODE_PAGE;
+
+    windows_utf8_borders(
+        utf8_code_page,
+        stream.is_terminal(),
+        std::env::var_os("WT_SESSION").is_some(),
+        is_windows_10_or_newer,
+    )
+}
+
+/// Decision logic behind the Windows UTF-8 border check, free of OS calls.
+#[cfg(any(windows, test))]
+fn windows_utf8_borders(
+    utf8_code_page: bool,
+    is_terminal: bool,
+    in_windows_terminal: bool,
+    is_windows_10_or_newer: impl FnOnce() -> bool,
+) -> bool {
+    if utf8_code_page {
         return true;
     }
-
-    // Windows 10+ (major version >= 10) renders UTF-8 correctly in most
-    // terminal emulators. Only truly ancient releases need the ASCII fallback.
-    is_windows_10_or_newer()
+    if !is_terminal {
+        return false;
+    }
+    in_windows_terminal || is_windows_10_or_newer()
 }
 
 /// Query the Windows NT kernel for the OS major version.
@@ -190,11 +253,51 @@ fn is_windows_10_or_newer() -> bool {
     false
 }
 
-/// Check whether the terminal can display UTF-8 box-drawing characters.
+/// Check whether `stream` can display UTF-8 box-drawing characters.
 ///
 /// On non-Windows platforms, returns `true` unconditionally because
-/// virtually all modern Unix terminals support UTF-8.
+/// virtually all modern Unix terminals and pipelines use UTF-8.
 #[cfg(not(windows))]
-pub(super) const fn terminal_supports_utf8_borders() -> bool {
+const fn terminal_supports_utf8_borders(_stream: TerminalStream) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirected_output_is_never_truncated_even_with_columns_set() {
+        let width = resolve_width(false, || Some(40), || Some(120));
+        assert_eq!(width, None, "piped output must keep full rows");
+    }
+
+    #[test]
+    fn terminal_output_prefers_columns_over_detected_width() {
+        assert_eq!(resolve_width(true, || Some(40), || Some(120)), Some(40));
+        assert_eq!(resolve_width(true, || None, || Some(120)), Some(120));
+        assert_eq!(resolve_width(true, || None, || None), None);
+    }
+
+    #[test]
+    fn redirected_windows_output_uses_ascii_unless_code_page_is_utf8() {
+        assert!(
+            !windows_utf8_borders(false, false, true, || true),
+            "a file or pipe on a legacy code page gets ASCII borders"
+        );
+        assert!(
+            windows_utf8_borders(true, false, false, || false),
+            "a UTF-8 console code page keeps box drawing when redirected"
+        );
+    }
+
+    #[test]
+    fn windows_console_output_keeps_existing_heuristics() {
+        assert!(windows_utf8_borders(false, true, true, || false));
+        assert!(windows_utf8_borders(false, true, false, || true));
+        assert!(
+            !windows_utf8_borders(false, true, false, || false),
+            "pre-Windows 10 consoles fall back to ASCII"
+        );
+    }
 }

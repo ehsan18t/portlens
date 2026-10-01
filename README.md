@@ -260,6 +260,12 @@ Additional columns with `--full`:
 | STATE   | Best-effort TCP state. On Windows each row gets the state of its own owning process; on Linux shared local sockets prefer `LISTEN`. Missing or ambiguous data shows `UNKNOWN`, UDP shows `-` |
 | USER    | Owning user. Shows `-` if unavailable. On Windows, PortLens prefers the account name and falls back to a SID string when needed                                                              |
 
+### Piped and Redirected Output
+
+When stdout is a file or a pipe, PortLens never truncates rows to fit a width, even if `COLUMNS` is set, so `portlens | grep node` always sees full process names. `COLUMNS` only overrides the detected width when stdout is a terminal.
+
+On Windows, redirected output uses ASCII borders (`+`, `-`, `|`) unless the console code page is UTF-8 (65001). Windows PowerShell 5.1 decodes a program's output with the console code page, so box-drawing characters in `portlens > ports.txt` would otherwise turn into mojibake. For scripts, prefer `--json`.
+
 ---
 
 ## Smart Features

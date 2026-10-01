@@ -13,7 +13,7 @@ use super::render::{
     render_border_line, render_bordered_cells, rendered_table_width, truncate_to_width,
     utf8_border_style,
 };
-use super::terminal::{stderr_terminal_width, terminal_supports_utf8_borders};
+use super::terminal::{stderr_supports_utf8_borders, stderr_terminal_width};
 
 const QUICK_ACTIONS: &[ActionItem] = &[
     ActionItem {
@@ -59,7 +59,7 @@ pub(super) fn write_tips(writer: &mut impl Write) -> Result<()> {
 fn write_tips_with_width(writer: &mut impl Write, terminal_width: Option<usize>) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let title = format!("Quick Actions  PortLens v{version}");
-    let style = if terminal_supports_utf8_borders() {
+    let style = if stderr_supports_utf8_borders() {
         utf8_border_style()
     } else {
         ascii_border_style()
