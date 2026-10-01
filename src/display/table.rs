@@ -9,13 +9,13 @@ use anyhow::{Context, Result};
 
 use crate::types::PortEntry;
 
-use super::DisplayOptions;
 use super::render::{
     Alignment, BorderStyle, ascii_border_style, display_width, format_cell, pad_value,
     reduce_widths_to_fit, render_border_line, render_bordered_cells, rendered_table_width,
     truncate_to_width, utf8_border_style,
 };
 use super::terminal::{stdout_terminal_width, terminal_supports_utf8_borders};
+use super::{DisplayOptions, sanitize_for_terminal};
 
 /// Maximum display width for the process name column before truncation.
 const MAX_PROCESS_NAME_LEN: usize = 20;
@@ -432,17 +432,28 @@ impl Column {
         }
     }
 
+    /// Render one cell of `entry` as display text.
+    ///
+    /// This is the single place where entry data becomes cell text. Every
+    /// free-text field (process, user, project, app) passes through
+    /// [`sanitize_for_terminal`] here, before truncation and before
+    /// [`measure_column_widths`] sees it, so escape sequences never reach the
+    /// terminal and column widths match what is actually printed.
     fn value(self, entry: &PortEntry) -> String {
         match self {
             Self::Port => entry.port.to_string(),
             Self::Proto => entry.proto.to_string(),
             Self::Address => entry.local_addr.to_string(),
             Self::State => entry.state.to_string(),
-            Self::Process => truncate_to_width(&entry.process, MAX_PROCESS_NAME_LEN),
+            Self::Process => {
+                truncate_to_width(&sanitize_for_terminal(&entry.process), MAX_PROCESS_NAME_LEN)
+            }
             Self::Pid => entry.pid.to_string(),
-            Self::User => entry.user.to_string(),
-            Self::Project => entry.project.as_deref().unwrap_or("-").to_string(),
-            Self::App => entry.app.as_deref().unwrap_or("-").to_string(),
+            Self::User => sanitize_for_terminal(&entry.user).into_owned(),
+            Self::Project => {
+                sanitize_for_terminal(entry.project.as_deref().unwrap_or("-")).into_owned()
+            }
+            Self::App => sanitize_for_terminal(entry.app.as_deref().unwrap_or("-")).into_owned(),
             Self::Uptime => format_uptime(entry.uptime_secs),
         }
     }
@@ -747,6 +758,58 @@ mod tests {
                 && !output.contains('╭')
                 && !output.contains('+'),
             "very narrow tables should fall back to compact rendering instead of borders"
+        );
+    }
+
+    fn hostile_entry() -> PortEntry {
+        let mut entry = sample_entry_for_tests();
+        entry.process = "evil\x1b]0;pwn\x07".into();
+        entry.user = "root\u{009B}2J".into();
+        entry.project = Some("proj\u{202E}gpj.exe\x1b[2J".to_string());
+        entry
+    }
+
+    #[test]
+    fn write_table_strips_control_and_bidi_characters() {
+        let entries = vec![hostile_entry(), sample_entry_for_tests()];
+        for compact in [false, true] {
+            let opts = display_options(true, true, compact);
+            let output = render_table_output(&entries, &opts, None);
+            assert!(
+                !output
+                    .chars()
+                    .any(|ch| (ch.is_control() && ch != '\n') || ch == '\u{202E}'),
+                "table output must not contain raw control or bidi characters: {output:?}"
+            );
+            assert!(
+                output.contains("evil\u{FFFD}]0;pwn\u{FFFD}"),
+                "hostile process name should stay visible with substitutes"
+            );
+        }
+    }
+
+    #[test]
+    fn write_table_measures_widths_on_sanitized_values() {
+        let entries = vec![hostile_entry(), sample_entry_for_tests()];
+        let columns = table_columns(true);
+        let rows = build_rows(&entries, columns);
+        let widths = measure_column_widths(columns, &rows, true);
+        let process_index = columns
+            .iter()
+            .position(|column| matches!(column, Column::Process))
+            .expect("full layout has a process column");
+        assert_eq!(
+            widths[process_index],
+            display_width("evil\u{FFFD}]0;pwn\u{FFFD}"),
+            "process width must count each substituted control char as one column"
+        );
+
+        let opts = display_options(true, true, false);
+        let output = render_table_output(&entries, &opts, None);
+        let line_widths = output.lines().map(display_width).collect::<Vec<_>>();
+        assert!(
+            line_widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "every bordered line must have the same width: {line_widths:?}\n{output}"
         );
     }
 

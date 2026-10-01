@@ -4,6 +4,8 @@
 //! `mod.rs` stays a thin public-API façade and each consumer submodule
 //! imports only what it needs.
 
+use std::borrow::Cow;
+
 #[derive(Clone, Copy)]
 pub(super) enum Alignment {
     Left,
@@ -58,6 +60,56 @@ const WIDE_RANGES: &[(char, char)] = &[
     ('\u{20000}', '\u{2FFFD}'),
     ('\u{30000}', '\u{3FFFD}'),
 ];
+
+/// Visible stand-in for characters that must never reach the terminal raw.
+const TERMINAL_REPLACEMENT: char = '\u{FFFD}';
+
+/// Make externally sourced text safe to write to a terminal.
+///
+/// Process names, user names, project names and app labels come from sources
+/// an unprivileged user can control (for example `prctl(PR_SET_NAME)` or repo
+/// metadata). Writing them raw would let that user inject escape sequences
+/// into the terminal of whoever runs portlens. Every control character
+/// (C0, DEL, and C1 including the single-byte CSI `U+009B`) and every bidi
+/// override, embedding, isolate or mark is replaced with `U+FFFD` so the text
+/// stays visible, cannot drive the terminal, and cannot visually reorder
+/// neighbouring columns.
+///
+/// Returns [`Cow::Borrowed`] when the input is already clean, so the common
+/// path does not allocate.
+pub fn sanitize_for_terminal(value: &str) -> Cow<'_, str> {
+    if !value.chars().any(is_terminal_unsafe) {
+        return Cow::Borrowed(value);
+    }
+
+    Cow::Owned(
+        value
+            .chars()
+            .map(|ch| {
+                if is_terminal_unsafe(ch) {
+                    TERMINAL_REPLACEMENT
+                } else {
+                    ch
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Whether `ch` can alter terminal state or visual ordering when printed.
+const fn is_terminal_unsafe(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            // Arabic letter mark, LRM and RLM: invisible direction marks.
+            '\u{061C}'
+                | '\u{200E}'..='\u{200F}'
+                // LRE, RLE, PDF, LRO, RLO: embeddings and overrides.
+                | '\u{202A}'..='\u{202E}'
+                // LRI, RLI, FSI, PDI: isolates.
+                | '\u{2066}'..='\u{2069}'
+        )
+}
 
 pub(super) fn display_width(value: &str) -> usize {
     let mut width = 0;
@@ -291,7 +343,78 @@ pub(super) const fn ascii_border_style() -> BorderStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_width, truncate_to_width};
+    use std::borrow::Cow;
+
+    use super::{display_width, sanitize_for_terminal, truncate_to_width};
+
+    #[test]
+    fn sanitize_replaces_csi_escape_sequence() {
+        let result = sanitize_for_terminal("a\x1b[2Jb");
+        assert_eq!(result, "a\u{FFFD}[2Jb", "ESC must be replaced");
+        assert!(!result.contains('\x1b'), "no raw ESC may survive");
+    }
+
+    #[test]
+    fn sanitize_replaces_osc_title_sequence_with_bel() {
+        let result = sanitize_for_terminal("\x1b]0;pwn\x07");
+        assert_eq!(
+            result, "\u{FFFD}]0;pwn\u{FFFD}",
+            "ESC and BEL terminator must both be replaced"
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_c1_csi_and_del() {
+        let result = sanitize_for_terminal("x\u{009B}2Jy\u{007F}");
+        assert_eq!(
+            result, "x\u{FFFD}2Jy\u{FFFD}",
+            "single-byte C1 CSI and DEL must be replaced"
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_newlines_and_tabs() {
+        assert_eq!(
+            sanitize_for_terminal("a\r\nb\tc"),
+            "a\u{FFFD}\u{FFFD}b\u{FFFD}c",
+            "line breaks and tabs would break row layout"
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_bidi_overrides_and_isolates() {
+        for ch in [
+            '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
+            '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            let input = format!("ab{ch}cd");
+            assert_eq!(
+                sanitize_for_terminal(&input),
+                "ab\u{FFFD}cd",
+                "bidi control U+{:04X} must be replaced",
+                u32::from(ch)
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_borrows_clean_input() {
+        for clean in ["node", "my-app", "Next.js", "世界", "e\u{0301}", ""] {
+            assert!(
+                matches!(sanitize_for_terminal(clean), Cow::Borrowed(s) if s == clean),
+                "clean input {clean:?} should be borrowed without allocating"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_text_has_one_column_per_replaced_char() {
+        assert_eq!(
+            display_width(&sanitize_for_terminal("a\x1b[2Jb")),
+            6,
+            "each replaced control character must occupy exactly one column"
+        );
+    }
 
     #[test]
     fn display_width_treats_cjk_as_double_width() {

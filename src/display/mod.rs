@@ -21,6 +21,8 @@ use anyhow::{Context, Result};
 
 use crate::types::PortEntry;
 
+pub(crate) use render::sanitize_for_terminal;
+
 /// Options controlling how entries are rendered.
 pub struct DisplayOptions {
     /// Show the header row.
