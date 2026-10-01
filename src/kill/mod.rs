@@ -881,6 +881,7 @@ mod tests {
                 name: name.to_string(),
                 start_time: 1,
                 origin,
+                exe_name: None,
             }),
         })
     }

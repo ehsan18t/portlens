@@ -8,6 +8,8 @@
 //! a [`ContainerTarget`] instead of a process target so the kill flow can
 //! stop the container via the daemon API rather than killing the proxy PID.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Result, bail};
 use log::debug;
 
@@ -57,9 +59,10 @@ pub enum ResolvedTarget {
 /// Enumerate targets owning sockets on `port`.
 ///
 /// Runs Docker/Podman detection in parallel with port enumeration. When
-/// the matching entry is a known Docker proxy/helper and the daemon reports a
-/// container for that port, the resolver yields a [`ContainerTarget`].
-/// Otherwise it produces a regular process [`Target`].
+/// the matching entry is a known container runtime proxy (by process or
+/// executable name) and the daemon reports a container for that port, the
+/// resolver yields a [`ContainerTarget`]. Otherwise it produces a regular
+/// process [`Target`].
 pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // Start Docker detection early so it overlaps with socket enumeration.
     let docker_handle = docker::start_detection(what_stack::home_dir());
@@ -68,36 +71,36 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
         deep_enrichment: false,
     })?;
 
+    // One snapshot serves both the proxy check (executable names) and the
+    // PID-reuse check (identities) for every process on a matching port.
+    let mut pids: Vec<u32> = entries
+        .iter()
+        .filter(|entry| matches_port_target(entry, filter))
+        .map(|entry| entry.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let identities = snapshot_identities(&pids);
+
     let container_map = docker_handle.wait();
 
     let mut targets = resolve_targets_from_entries(
         entries,
         filter,
         &container_map,
+        &identities,
         #[cfg(target_os = "linux")]
         &mut docker::RootlessPodmanResolver::default(),
         #[cfg(target_os = "linux")]
         what_stack::home_dir().as_deref(),
     )?;
-    attach_identities(&mut targets);
+    attach_identities(&mut targets, &identities);
     Ok(targets)
 }
 
-/// Capture the identity of every process target in one refresh so the kill
+/// Attach the resolve-time identity of every process target so the kill
 /// step can detect a PID that was reused after resolution.
-fn attach_identities(targets: &mut [ResolvedTarget]) {
-    let pids: Vec<u32> = targets
-        .iter()
-        .filter_map(|t| match t {
-            ResolvedTarget::Process(p) => Some(p.pid),
-            ResolvedTarget::Container(_) => None,
-        })
-        .collect();
-    if pids.is_empty() {
-        return;
-    }
-
-    let identities = snapshot_identities(&pids);
+fn attach_identities(targets: &mut [ResolvedTarget], identities: &HashMap<u32, ProcessIdentity>) {
     for t in targets {
         if let ResolvedTarget::Process(p) = t {
             p.identity = identities.get(&p.pid).cloned();
@@ -105,28 +108,39 @@ fn attach_identities(targets: &mut [ResolvedTarget]) {
     }
 }
 
+/// Targets resolved so far, with the keys used to skip duplicates.
+#[derive(Default)]
+struct TargetSet {
+    seen_pids: HashSet<u32>,
+    seen_containers: HashSet<String>,
+    targets: Vec<ResolvedTarget>,
+}
+
 fn resolve_targets_from_entries(
     entries: Vec<PortEntry>,
     filter: PortFilter,
     container_map: &ContainerPortMap,
+    identities: &HashMap<u32, ProcessIdentity>,
     #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
     #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
 ) -> Result<Vec<ResolvedTarget>> {
-    let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut seen_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut targets = Vec::new();
+    let mut set = TargetSet::default();
 
     for entry in entries {
         if !matches_port_target(&entry, filter) {
             continue;
         }
 
+        let exe_name = identities
+            .get(&entry.pid)
+            .and_then(|identity| identity.exe_name.as_deref());
+        let is_proxy = collector::is_container_proxy(&entry.process, exe_name);
+
         append_target_from_entry(
             &entry,
+            is_proxy,
             container_map,
-            &mut seen_pids,
-            &mut seen_containers,
-            &mut targets,
+            &mut set,
             #[cfg(target_os = "linux")]
             podman_rootless_resolver,
             #[cfg(target_os = "linux")]
@@ -134,23 +148,20 @@ fn resolve_targets_from_entries(
         )?;
     }
 
-    Ok(targets)
+    Ok(set.targets)
 }
 
 fn append_target_from_entry(
     entry: &PortEntry,
+    is_proxy: bool,
     container_map: &ContainerPortMap,
-    seen_pids: &mut std::collections::HashSet<u32>,
-    seen_containers: &mut std::collections::HashSet<String>,
-    targets: &mut Vec<ResolvedTarget>,
+    set: &mut TargetSet,
     #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
     #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
 ) -> Result<()> {
-    let process_name = entry.process.as_ref();
-
     // Known proxy/helper processes can multiplex multiple published ports on a
     // single PID, so container dedup must happen after proxy resolution.
-    if collector::is_docker_proxy_process(process_name) {
+    if is_proxy {
         let ct = container_target_for_entry(
             container_map,
             entry,
@@ -160,12 +171,12 @@ fn append_target_from_entry(
             home,
         )?;
 
-        if seen_containers.insert(ct.container_id.clone()) {
+        if set.seen_containers.insert(ct.container_id.clone()) {
             debug!(
                 "resolved port {} to container '{}' (proxy pid {})",
                 entry.port, ct.container_name, ct.proxy_pid
             );
-            targets.push(ResolvedTarget::Container(ct));
+            set.targets.push(ResolvedTarget::Container(ct));
         }
 
         return Ok(());
@@ -173,10 +184,10 @@ fn append_target_from_entry(
 
     // Non-proxy processes can own multiple matching sockets, but signaling the
     // same PID more than once is redundant.
-    if seen_pids.insert(entry.pid) {
-        targets.push(ResolvedTarget::Process(Target {
+    if set.seen_pids.insert(entry.pid) {
+        set.targets.push(ResolvedTarget::Process(Target {
             pid: entry.pid,
-            process: process_name.to_owned(),
+            process: entry.process.as_ref().to_owned(),
             identity: None,
         }));
     }
@@ -463,6 +474,7 @@ mod tests {
                 end: 4000,
             },
             &map,
+            &HashMap::new(),
             #[cfg(target_os = "linux")]
             &mut docker::RootlessPodmanResolver::default(),
             #[cfg(target_os = "linux")]
@@ -500,6 +512,7 @@ mod tests {
                 end: 4000,
             },
             &ContainerPortMap::default(),
+            &HashMap::new(),
             #[cfg(target_os = "linux")]
             &mut docker::RootlessPodmanResolver::default(),
             #[cfg(target_os = "linux")]
@@ -516,5 +529,53 @@ mod tests {
             &targets[0],
             ResolvedTarget::Process(Target { pid, process, .. }) if *pid == 4242 && process == "node"
         ));
+    }
+
+    #[test]
+    fn resolve_targets_from_entries_recognizes_proxy_by_executable_name() {
+        let mut entry = make_entry(5432, Protocol::Tcp, State::Listen, "renamed-helper");
+        entry.pid = 7100;
+        entry.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+        let mut map = ContainerPortMap::new();
+        insert_test_container(
+            &mut map,
+            None,
+            5432,
+            Protocol::Tcp,
+            "container-db",
+            "db",
+            "postgres:16",
+        );
+
+        let identities = HashMap::from([(
+            7100,
+            ProcessIdentity {
+                name: "renamed-helper".to_string(),
+                start_time: 1,
+                origin: super::super::platform::ProcessOrigin::default(),
+                exe_name: Some("docker-proxy".to_string()),
+            },
+        )]);
+
+        let targets = resolve_targets_from_entries(
+            vec![entry],
+            PortFilter::Single(5432),
+            &map,
+            &identities,
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect("a proxy known by its executable name should resolve");
+
+        assert!(
+            matches!(
+                targets.as_slice(),
+                [ResolvedTarget::Container(ContainerTarget { container_name, .. })] if container_name == "db"
+            ),
+            "the listing and kill must agree that this row is a container: {targets:?}"
+        );
     }
 }

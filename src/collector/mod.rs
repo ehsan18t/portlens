@@ -32,7 +32,7 @@ mod resolve;
 mod tcp_state;
 mod user;
 
-pub(crate) use dedup::is_docker_proxy_process;
+pub(crate) use resolve::is_container_proxy;
 
 use std::collections::HashSet;
 use std::sync::Arc;

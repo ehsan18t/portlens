@@ -97,6 +97,10 @@ pub struct ProcessIdentity {
     /// Executable path or ownership, used only for the critical-process
     /// check. Not part of identity matching.
     pub origin: ProcessOrigin,
+    /// File name of the executable, when the OS reports it. Used to
+    /// recognize a container runtime port proxy whose process name differs
+    /// from its executable. Not part of identity matching.
+    pub exe_name: Option<String>,
 }
 
 impl ProcessIdentity {
@@ -105,26 +109,24 @@ impl ProcessIdentity {
             name: process.name().to_string_lossy().into_owned(),
             start_time: process.start_time(),
             origin: ProcessOrigin::of(process),
+            exe_name: process
+                .exe()
+                .and_then(std::path::Path::file_name)
+                .and_then(std::ffi::OsStr::to_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
         }
     }
 }
 
 /// What a resolve-time snapshot must load beyond name and start time: the
-/// executable path on Windows, the owning user on Unix.
+/// executable path everywhere, plus the owning user on Unix.
 fn snapshot_refresh_kind() -> ProcessRefreshKind {
-    #[cfg(windows)]
-    {
-        ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
-    }
-
-    #[cfg(unix)]
-    {
-        ProcessRefreshKind::nothing().with_user(sysinfo::UpdateKind::OnlyIfNotSet)
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        ProcessRefreshKind::nothing()
+    let with_exe = ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
+    if cfg!(unix) {
+        with_exe.with_user(sysinfo::UpdateKind::OnlyIfNotSet)
+    } else {
+        with_exe
     }
 }
 
@@ -436,6 +438,7 @@ mod tests {
             name: name.to_owned(),
             start_time,
             origin: ProcessOrigin::default(),
+            exe_name: None,
         }
     }
 

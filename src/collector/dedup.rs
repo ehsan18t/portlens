@@ -8,10 +8,11 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+use crate::docker::is_container_proxy_process;
 use crate::types::{PortEntry, Protocol, State};
 use log::debug;
 
-/// Key for clustering Docker proxy entries.
+/// Key for clustering container runtime proxy entries.
 ///
 /// Proxy rows are only safe to collapse when they agree on the logical
 /// container identity attached during enrichment. Different containers can
@@ -24,8 +25,9 @@ type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<String>);
 /// On Windows with Docker Desktop (WSL2), the OS reports multiple sockets
 /// for the same Docker-published port (for example `wslrelay.exe` on IPv4
 /// and `com.docker.backend.exe` on IPv4 and IPv6). This collapses repeated
-/// rows from the same PID and then removes known Docker proxy duplicates
-/// while preserving distinct non-proxy worker processes.
+/// rows from the same PID and then removes known container runtime proxy
+/// duplicates (as recognized by [`is_container_proxy_process`]) while
+/// preserving distinct non-proxy worker processes.
 pub(super) fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     let original_len = entries.len();
     let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> =
@@ -77,7 +79,7 @@ fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
 }
 
 fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
-    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
+    (is_container_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
         (
             entry.port,
             entry.proto,
@@ -96,7 +98,7 @@ fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
 
     let (proxy_entries, real_entries): (Vec<_>, Vec<_>) = deduplicated
         .into_iter()
-        .partition(|entry| is_docker_proxy_process(&entry.process));
+        .partition(|entry| is_container_proxy_process(&entry.process));
 
     if !proxy_entries.iter().any(has_docker_enrichment) {
         return proxy_entries.into_iter().chain(real_entries).collect();
@@ -165,21 +167,6 @@ const fn address_preference(address: IpAddr) -> u8 {
         IpAddr::V6(ipv6) if ipv6.is_loopback() => 1,
         IpAddr::V4(_) | IpAddr::V6(_) => 5,
     }
-}
-
-pub fn is_docker_proxy_process(process_name: &str) -> bool {
-    const DOCKER_PROXY_PROCESSES: &[&str] = &[
-        "wslrelay",
-        "com.docker.backend",
-        "vpnkit",
-        "docker-proxy",
-        "rootlessport",
-    ];
-
-    let name = crate::types::strip_windows_exe_suffix(process_name);
-    DOCKER_PROXY_PROCESSES
-        .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
 }
 
 /// Score an entry by how much enrichment data it carries.
@@ -466,17 +453,77 @@ mod tests {
         assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");
     }
 
-    #[test]
-    fn docker_proxy_process_names_are_detected_case_insensitively() {
-        assert!(is_docker_proxy_process("wslrelay.exe"));
-        assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
-        assert!(is_docker_proxy_process("vpnkit"));
-        assert!(is_docker_proxy_process("ROOTLESSPORT"));
-        assert!(!is_docker_proxy_process("nginx"));
+    /// Two rows of one proxy process on different addresses, both carrying
+    /// the same container enrichment.
+    fn proxy_fan_out(process: &str) -> Vec<PortEntry> {
+        [
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ]
+        .into_iter()
+        .map(|local_addr| {
+            let mut entry = make_entry(8080, Protocol::Tcp);
+            entry.local_addr = local_addr;
+            entry.pid = 3001;
+            entry.process = process.into();
+            entry.project = Some("shop-web-1".to_string());
+            entry.app = Some("Nginx".into());
+            entry
+        })
+        .collect()
     }
 
     #[test]
-    fn docker_proxy_process_name_stripping_handles_non_ascii_input() {
-        assert!(!is_docker_proxy_process("éabc"));
+    fn dedup_collapses_fan_out_of_every_runtime_proxy() {
+        // Linux truncates process names to 15 bytes, hence `rootlessport-ch`.
+        for process in [
+            "docker-proxy",
+            "rootlesskit",
+            "rootlessport-ch",
+            "slirp4netns",
+            "pasta",
+            "gvproxy.exe",
+            "limactl",
+            "com.docker.vpnkit",
+        ] {
+            let result = deduplicate(proxy_fan_out(process));
+            assert_eq!(
+                result.len(),
+                1,
+                "{process} rows for one container should collapse to a single row"
+            );
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_enriched_rows_of_non_proxy_processes_apart() {
+        for process in ["nginx", "ssh", "socat"] {
+            let result = deduplicate(proxy_fan_out(process));
+            assert_eq!(
+                result.len(),
+                2,
+                "{process} is not a container proxy, so its rows must not collapse"
+            );
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_unenriched_helper_next_to_real_process() {
+        for helper in ["rootlesskit", "slirp4netns", "pasta", "gvproxy", "limactl"] {
+            let mut proxy_named = make_entry(8080, Protocol::Tcp);
+            proxy_named.pid = 1001;
+            proxy_named.process = helper.into();
+
+            let mut real = make_entry(8080, Protocol::Tcp);
+            real.pid = 1002;
+            real.process = "my-app".into();
+
+            let result = deduplicate(vec![proxy_named, real]);
+            assert_eq!(
+                result.len(),
+                2,
+                "{helper} without container enrichment must stay visible"
+            );
+        }
     }
 }

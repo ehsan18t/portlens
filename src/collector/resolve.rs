@@ -10,9 +10,21 @@ use crate::docker::{self, ContainerPortMap, ProxyFallback};
 use crate::types::Protocol;
 
 use super::CollectContext;
-use super::dedup;
 
 // ── Container resolution ─────────────────────────────────────────────
+
+/// Whether a listener is a container runtime port proxy, judged by its
+/// process name or by its executable file name.
+///
+/// Both names are checked because they can differ: a process can rename
+/// itself, and the reported name may be shortened. The collector and the
+/// kill resolver share this check, so a row the listing attributes to a
+/// container through the proxy fallback is also stopped as a container
+/// rather than killed as a process.
+pub fn is_container_proxy(process_name: &str, exe_name: Option<&str>) -> bool {
+    docker::is_container_proxy_process(process_name)
+        || exe_name.is_some_and(docker::is_container_proxy_process)
+}
 
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_container(
@@ -59,9 +71,7 @@ fn lookup_container<'a>(
     process_name: &str,
     exe_name: Option<&str>,
 ) -> Option<&'a docker::ContainerInfo> {
-    let fallback = if dedup::is_docker_proxy_process(process_name)
-        || exe_name.is_some_and(dedup::is_docker_proxy_process)
-    {
+    let fallback = if is_container_proxy(process_name, exe_name) {
         ProxyFallback::Allow
     } else {
         ProxyFallback::Deny
@@ -265,5 +275,17 @@ mod tests {
             None,
         );
         assert_container_name(container, "shared-api");
+    }
+
+    #[test]
+    fn container_proxy_check_accepts_either_name() {
+        assert!(is_container_proxy("docker-proxy", None));
+        assert!(is_container_proxy("renamed-helper", Some("gvproxy.exe")));
+        assert!(is_container_proxy(
+            "rootlessport-ch",
+            Some("rootlessport-child")
+        ));
+        assert!(!is_container_proxy("node", Some("node.exe")));
+        assert!(!is_container_proxy("node", None));
     }
 }
