@@ -453,9 +453,9 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "nanodock"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8b7fd6e7d39642c665dc98263586e15ad5755fd21f23757585776b7472acb59"
+checksum = "2e1da4ae6a829303392124208e47b6c6c088f2b56ecbca58b28147956479a663"
 dependencies = [
  "httparse",
  "libc",
@@ -1006,6 +1006,8 @@ dependencies = [
 [[package]]
 name = "what-stack"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9866c97b6d9238e5971cf4a16c06264d330436544fd4b220ace661f3821e1f"
 dependencies = [
  "libc",
 ]
