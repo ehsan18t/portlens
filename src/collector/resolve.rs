@@ -26,7 +26,10 @@ pub fn is_container_proxy(process_name: &str, exe_name: Option<&str>) -> bool {
         || exe_name.is_some_and(docker::is_container_proxy_process)
 }
 
-#[cfg(target_os = "linux")]
+/// Resolve the container behind a listener: first through the published
+/// ports reported by the daemon, then, for a rootless Podman `rootlessport`
+/// helper, through local Podman metadata (nanodock returns `None` for that
+/// step outside Linux).
 pub(super) fn resolve_container(
     context: &mut CollectContext<'_>,
     socket: SocketAddr,
@@ -51,19 +54,6 @@ pub(super) fn resolve_container(
     )
 }
 
-#[cfg(not(target_os = "linux"))]
-#[allow(clippy::needless_pass_by_ref_mut)]
-pub(super) fn resolve_container(
-    context: &mut CollectContext<'_>,
-    socket: SocketAddr,
-    proto: Protocol,
-    _pid: u32,
-    process_name: &str,
-    exe_name: Option<&str>,
-) -> Option<docker::ContainerInfo> {
-    lookup_container(context.container_map, socket, proto, process_name, exe_name).cloned()
-}
-
 fn lookup_container<'a>(
     container_map: &'a ContainerPortMap,
     socket: SocketAddr,
@@ -82,7 +72,6 @@ fn lookup_container<'a>(
         .container()
 }
 
-#[cfg(target_os = "linux")]
 fn rootless_podman_process_name<'a>(
     process_name: &'a str,
     exe_name: Option<&'a str>,

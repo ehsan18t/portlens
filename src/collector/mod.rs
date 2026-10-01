@@ -60,9 +60,7 @@ pub(in crate::collector) struct CollectContext<'a> {
     pub(in crate::collector) deep_enrichment: bool,
     pub(in crate::collector) stack_detector: &'a mut what_stack::StackDetector,
     pub(in crate::collector) process_names: &'a mut HashSet<Arc<str>>,
-    #[cfg(target_os = "linux")]
     pub(in crate::collector) home: Option<&'a std::path::Path>,
-    #[cfg(target_os = "linux")]
     pub(in crate::collector) podman_rootless_resolver: &'a mut docker::RootlessPodmanResolver,
 }
 
@@ -133,12 +131,10 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
     let now_epoch = current_epoch_secs();
 
     let mut process_names: HashSet<Arc<str>> = HashSet::new();
-    #[cfg(target_os = "linux")]
     let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
 
-    // Rootless Podman lookup (Linux only) needs its own copy of the home
-    // ceiling; everywhere else the detector takes ownership.
-    #[cfg(target_os = "linux")]
+    // Rootless Podman lookup needs its own copy of the home ceiling because
+    // the stack detector takes ownership of it.
     let podman_home = home.clone();
     let mut stack_detector = what_stack::StackDetector::with_home(home);
     let mut context = CollectContext {
@@ -150,9 +146,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         deep_enrichment: options.deep_enrichment,
         stack_detector: &mut stack_detector,
         process_names: &mut process_names,
-        #[cfg(target_os = "linux")]
         home: podman_home.as_deref(),
-        #[cfg(target_os = "linux")]
         podman_rootless_resolver: &mut podman_rootless_resolver,
     };
 
