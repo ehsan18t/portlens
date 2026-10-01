@@ -220,7 +220,21 @@ Safety:
 - Each target's process name and start time are captured when it is resolved and checked again right before it is signaled. If the PID now belongs to a different process, it is left alone and reported as `process-changed`. On Windows the check and the termination use the same process handle.
 - Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
 
-**Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable or does not confirm the stop, the failure is reported explicitly. A listener is treated as a proxy when its process name or its executable name is one of the container runtime proxies listed under Duplicate suppression; if such a proxy holds the port but no container can be matched to it, `kill --port` refuses instead of killing a helper that other containers or the runtime may depend on. Use `--pid` if you genuinely need to signal the proxy process directly.
+**Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the stop does not succeed, the report says why. A listener is treated as a proxy when its process name or its executable name is one of the container runtime proxies listed under Duplicate suppression; if such a proxy holds the port but no container can be matched to it, `kill --port` refuses instead of killing a helper that other containers or the runtime may depend on. Use `--pid` if you genuinely need to signal the proxy process directly.
+
+Container results and their `kill --json` status tokens:
+
+| Status                      | Meaning                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `container-stopped`         | The daemon stopped (or, with `--force`, killed) the container                                                 |
+| `container-already-stopped` | The container was already stopped                                                                             |
+| `container-not-found`       | The daemon does not know the container; it may have been removed                                              |
+| `container-unreachable`     | No container runtime daemon could be reached, so the request was never sent and the container was not touched |
+| `container-no-response`     | The daemon received the stop request but did not confirm it; the container may still be stopping              |
+| `container-rejected`        | The daemon refused the stop with an unexpected HTTP status, which the `hint` field names                      |
+| `container-stop-failed`     | The stop failed for a reason this version of PortLens does not classify                                       |
+
+Every container status except `container-stopped` and `container-already-stopped` makes `kill` exit 1. Before this release, unreachable, unconfirmed and refused stops were all reported as `container-stop-failed`.
 
 ### Subcommand: `update`
 

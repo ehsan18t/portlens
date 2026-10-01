@@ -53,7 +53,19 @@ pub enum KillStatus {
     /// Container was not found by the daemon.
     #[serde(rename = "container-not-found")]
     ContainerNotFound,
-    /// Daemon could not stop the container.
+    /// No container runtime daemon could be reached, so the stop request was
+    /// never delivered and the container was not touched.
+    #[serde(rename = "container-unreachable")]
+    ContainerUnreachable,
+    /// A daemon received the stop request but gave no usable reply; the
+    /// container may still be stopping.
+    #[serde(rename = "container-no-response")]
+    ContainerNoResponse,
+    /// The daemon answered the stop request with an unexpected HTTP status.
+    #[serde(rename = "container-rejected")]
+    ContainerRejected,
+    /// The stop failed for a reason this version of portlens does not
+    /// classify (a stop outcome added by a newer nanodock release).
     #[serde(rename = "container-stop-failed")]
     ContainerStopFailed,
     /// Dry-run: container would be stopped (graceful).
@@ -161,8 +173,20 @@ impl KillReportEntry {
                 KillStatus::ContainerNotFound,
                 Some("the container may have been removed".to_owned()),
             ),
-            // Unreachable, NoResponse, Rejected, and any future variant share
-            // one generic hint that does not claim a specific cause.
+            StopOutcome::Unreachable => (
+                KillStatus::ContainerUnreachable,
+                Some(CONTAINER_UNREACHABLE_HINT.to_owned()),
+            ),
+            StopOutcome::NoResponse => (
+                KillStatus::ContainerNoResponse,
+                Some(CONTAINER_NO_RESPONSE_HINT.to_owned()),
+            ),
+            StopOutcome::Rejected { status } => (
+                KillStatus::ContainerRejected,
+                Some(format!("the daemon refused the stop (HTTP {status})")),
+            ),
+            // `StopOutcome` is non-exhaustive: an outcome added later gets a
+            // generic status and a hint that claims no specific cause.
             _ => (
                 KillStatus::ContainerStopFailed,
                 Some(CONTAINER_STOP_FAILED_HINT.to_owned()),
@@ -207,6 +231,9 @@ impl KillReportEntry {
             KillStatus::PermissionDenied
                 | KillStatus::ProcessChanged
                 | KillStatus::Failed
+                | KillStatus::ContainerUnreachable
+                | KillStatus::ContainerNoResponse
+                | KillStatus::ContainerRejected
                 | KillStatus::ContainerStopFailed
                 | KillStatus::ContainerNotFound
         )
@@ -220,6 +247,9 @@ impl KillReportEntry {
             self.status,
             KillStatus::PermissionDenied
                 | KillStatus::ProcessChanged
+                | KillStatus::ContainerUnreachable
+                | KillStatus::ContainerNoResponse
+                | KillStatus::ContainerRejected
                 | KillStatus::ContainerStopFailed
                 | KillStatus::ContainerNotFound
         )
@@ -229,9 +259,15 @@ impl KillReportEntry {
 /// Hint attached to `process-changed` entries.
 const PROCESS_CHANGED_HINT: &str = "the pid now belongs to a different process (or its identity could not be verified); nothing was killed, re-run to resolve targets again";
 
+/// Hint attached to `container-unreachable` entries.
+const CONTAINER_UNREACHABLE_HINT: &str =
+    "could not reach the container runtime daemon; the container was not touched";
+
+/// Hint attached to `container-no-response` entries.
+const CONTAINER_NO_RESPONSE_HINT: &str = "the daemon received the stop request but did not confirm it; the container may still be stopping";
+
 /// Hint attached to `container-stop-failed` entries.
-const CONTAINER_STOP_FAILED_HINT: &str =
-    "the container runtime did not confirm the stop (daemon unreachable or unexpected response)";
+const CONTAINER_STOP_FAILED_HINT: &str = "the container runtime did not confirm the stop";
 
 #[cfg(windows)]
 const fn elevation_hint() -> &'static str {
@@ -291,8 +327,14 @@ fn format_container_line(e: &KillReportEntry, name: &str) -> String {
             format!("container '{name}' ({id}) was already stopped")
         }
         KillStatus::ContainerNotFound => format!("container '{name}' ({id}) not found"),
-        KillStatus::ContainerStopFailed => format!(
+        KillStatus::ContainerUnreachable
+        | KillStatus::ContainerRejected
+        | KillStatus::ContainerStopFailed => format!(
             "failed to stop container '{name}' ({id}); {}",
+            e.hint.as_deref().unwrap_or("")
+        ),
+        KillStatus::ContainerNoResponse => format!(
+            "stop of container '{name}' ({id}) was not confirmed; {}",
             e.hint.as_deref().unwrap_or("")
         ),
         _ => format!("container '{name}' ({id}): {:?}", e.status),
@@ -365,25 +407,66 @@ mod tests {
         assert!(!entry.is_failure());
     }
 
-    #[test]
-    fn container_outcome_failed_is_failure() {
-        let ct = ContainerTarget {
+    fn web_target() -> ContainerTarget {
+        ContainerTarget {
             container_id: "abc123".to_string(),
             container_name: "web".to_string(),
             port: 3000,
             proxy_pid: 300,
             proxy_process: "docker-proxy".to_string(),
-        };
-        let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::NoResponse);
-        assert_eq!(entry.status, KillStatus::ContainerStopFailed);
-        assert!(
-            entry.is_failure(),
-            "failed container stop should be a failure"
-        );
-        let hint = entry.hint.as_deref().unwrap_or("");
-        assert!(
-            hint.contains("did not confirm") && !hint.contains("could not reach"),
-            "the generic hint must not claim unreachability: {hint}"
+        }
+    }
+
+    #[test]
+    fn unsuccessful_container_outcomes_have_distinct_statuses() {
+        let cases = [
+            (
+                StopOutcome::Unreachable,
+                KillStatus::ContainerUnreachable,
+                "container-unreachable",
+                "could not reach the container runtime daemon",
+            ),
+            (
+                StopOutcome::NoResponse,
+                KillStatus::ContainerNoResponse,
+                "container-no-response",
+                "may still be stopping",
+            ),
+            (
+                StopOutcome::Rejected { status: 500 },
+                KillStatus::ContainerRejected,
+                "container-rejected",
+                "the daemon refused the stop (HTTP 500)",
+            ),
+        ];
+
+        for (outcome, status, token, hint) in cases {
+            let entry = KillReportEntry::from_container_outcome(web_target(), outcome);
+            assert_eq!(entry.status, status, "{outcome:?} should map to {status:?}");
+            assert!(entry.is_failure(), "{outcome:?} must count as a failure");
+            assert_eq!(
+                serde_json::to_value(entry.status).expect("status should serialize"),
+                serde_json::json!(token),
+                "JSON status token should be stable"
+            );
+            let actual_hint = entry.hint.as_deref().unwrap_or("");
+            assert!(
+                actual_hint.contains(hint),
+                "{outcome:?} hint should say {hint:?}: {actual_hint}"
+            );
+            assert!(
+                format_container_line(&entry, "web").contains(actual_hint),
+                "human output should carry the hint"
+            );
+        }
+    }
+
+    #[test]
+    fn no_response_is_not_reported_as_a_failed_stop() {
+        let entry = KillReportEntry::from_container_outcome(web_target(), StopOutcome::NoResponse);
+        assert_eq!(
+            format_container_line(&entry, "web"),
+            "stop of container 'web' (abc123) was not confirmed; the daemon received the stop request but did not confirm it; the container may still be stopping"
         );
     }
 
