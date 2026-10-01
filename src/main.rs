@@ -395,6 +395,7 @@ fn print_help() {
     println!("      --pid <PID>      Kill the given PID");
     println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
     println!("  -y, --yes            Skip interactive confirmation");
+    println!("                       (required when stdin is not a terminal)");
     println!("      --dry-run        List targets without killing anything");
     println!("      --json           Emit the kill report or dry-run target list as JSON");
 }

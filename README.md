@@ -207,11 +207,13 @@ portlens kill --pid 12345 --json
 | `--port <PORT>` | `-p`  | Kill TCP listeners or UDP binders on a local port or range (e.g. `3000` or `3000-4000`) |
 | `--pid <num>`   |       | Kill the specified PID                                                                  |
 | `--force`       | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)             |
-| `--yes`         | `-y`  | Skip interactive confirmation                                                           |
+| `--yes`         | `-y`  | Skip interactive confirmation (required when stdin is not a terminal)                   |
 | `--dry-run`     |       | List resolved targets without signaling anything                                        |
 | `--json`        |       | Emit the kill report or dry-run target list as JSON                                     |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
+
+When stdin is not a terminal (scripts, pipes, editor tasks), `kill` refuses to run without `--yes` or `--dry-run` instead of skipping the prompt. The check happens before any targets are resolved, so it exits 2 even when nothing would match.
 
 **Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable or does not confirm the stop, the failure is reported explicitly. Use `--pid` if you genuinely need to signal the proxy process directly.
 
@@ -303,12 +305,12 @@ For environment-specific debugging, run with `--trace` to emit diagnostic output
 
 ## Exit Codes
 
-| Code | Meaning                                                                     |
-| ---- | --------------------------------------------------------------------------- |
-| 0    | Success                                                                     |
-| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed) |
-| 2    | Usage error (invalid flag combination or missing required argument)         |
-| 3    | `kill` selector matched no live process                                     |
+| Code | Meaning                                                                                                                     |
+| ---- | --------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success                                                                                                                     |
+| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed), or the `kill` confirmation prompt was declined |
+| 2    | Usage error (invalid flag combination, missing required argument, or `kill` without `--yes` when stdin is not a terminal)   |
+| 3    | `kill` selector matched no live process                                                                                     |
 
 ---
 

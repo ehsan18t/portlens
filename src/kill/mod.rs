@@ -1,4 +1,4 @@
-//! # Kill — terminate processes by port or PID
+//! # Kill: terminate processes by port or PID
 //!
 //! Cross-platform process termination. Targets are resolved to a unique set
 //! of PIDs (multiple sockets per process are collapsed; multiple processes
@@ -48,12 +48,59 @@ pub struct KillOptions {
     pub json: bool,
 }
 
+/// Exit code when the user declined the confirmation prompt.
+const EXIT_ABORTED: u8 = 1;
+/// Exit code for usage errors, matching the CLI's own usage-error code.
+const EXIT_USAGE: u8 = 2;
+/// Exit code when the selector matched nothing.
+const EXIT_NOTHING_TO_KILL: u8 = 3;
+
+/// How the confirmation step should behave for one invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmMode {
+    /// No prompt: `--yes` or `--dry-run` was given.
+    Skip,
+    /// Ask on stderr and read the answer from the interactive stdin.
+    Prompt,
+    /// Confirmation is required but stdin is not a terminal, so nobody can
+    /// answer. Refuse instead of killing unconfirmed.
+    RefuseNonInteractive,
+}
+
+/// Decide how to confirm a kill. Pure so the non-TTY refusal is testable.
+const fn confirm_mode(yes: bool, dry_run: bool, stdin_is_terminal: bool) -> ConfirmMode {
+    if yes || dry_run {
+        ConfirmMode::Skip
+    } else if stdin_is_terminal {
+        ConfirmMode::Prompt
+    } else {
+        ConfirmMode::RefuseNonInteractive
+    }
+}
+
+/// Run the confirmation step for `mode`.
+///
+/// Returns `Some(exit_code)` when the run must stop (the user declined, or
+/// nobody can answer), or `None` to proceed. `ask` is only invoked in
+/// [`ConfirmMode::Prompt`].
+fn confirmation_exit(mode: ConfirmMode, ask: impl FnOnce() -> Result<bool>) -> Result<Option<u8>> {
+    match mode {
+        ConfirmMode::Prompt if !ask()? => Ok(Some(EXIT_ABORTED)),
+        ConfirmMode::RefuseNonInteractive => Ok(Some(EXIT_USAGE)),
+        ConfirmMode::Skip | ConfirmMode::Prompt => Ok(None),
+    }
+}
+
 /// Run a kill operation end-to-end.
 ///
 /// Returns `Ok(exit_code)` where:
-/// - `0` — every resolved target succeeded (or was already gone).
-/// - `1` — at least one target failed (permission denied, other errors).
-/// - `3` — nothing to kill (no PID matched the selector).
+/// - `0`: every resolved target succeeded (or was already gone), or a dry run
+///   with at least one target.
+/// - `1`: at least one target failed (permission denied, other errors), or
+///   the user declined the confirmation prompt.
+/// - `2`: confirmation is required but stdin is not a terminal; pass `--yes`.
+///   Checked before targets are resolved.
+/// - `3`: nothing to kill (no PID matched the selector).
 ///
 /// Errors propagate only for unexpected conditions such as socket enumeration
 /// failure or stdout/stderr write failure.
@@ -62,6 +109,19 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
         "kill run: target={:?} force={} yes={} dry_run={} json={}",
         opts.target, opts.force, opts.yes, opts.dry_run, opts.json
     );
+
+    // Decide before resolving anything: a piped or scripted run without
+    // `--yes` must never kill unconfirmed.
+    let mode = confirm_mode(opts.yes, opts.dry_run, std::io::stdin().is_terminal());
+    if mode == ConfirmMode::RefuseNonInteractive {
+        eprintln!(
+            "error: refusing to kill without confirmation because stdin is not a terminal; pass --yes to proceed or --dry-run to preview"
+        );
+        eprintln!();
+        eprintln!("Try 'portlens --help' for more information.");
+        return Ok(EXIT_USAGE);
+    }
+
     let targets = resolve_targets(opts)?;
 
     if targets.is_empty() {
@@ -73,16 +133,16 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
             KillTarget::Pid(pid) => format!("no process with pid {pid}"),
         };
         eprintln!("{msg}");
-        return Ok(3);
+        return Ok(EXIT_NOTHING_TO_KILL);
     }
 
     reject_protected_pids(&targets)?;
 
     debug!("resolved {} kill target(s)", targets.len());
 
-    if !opts.yes && !opts.dry_run && std::io::stdin().is_terminal() && !confirm(&targets, opts)? {
+    if let Some(code) = confirmation_exit(mode, || confirm(&targets, opts))? {
         eprintln!("aborted");
-        return Ok(0);
+        return Ok(code);
     }
 
     if opts.dry_run {
@@ -426,6 +486,47 @@ mod tests {
             assert_eq!(confirmation_verb(false), "kill");
             assert_eq!(confirmation_verb(true), "forcefully kill");
         }
+    }
+
+    #[test]
+    fn confirm_mode_refuses_non_interactive_stdin() {
+        assert_eq!(
+            confirm_mode(false, false, false),
+            ConfirmMode::RefuseNonInteractive,
+            "piped or scripted runs without --yes must not kill unconfirmed"
+        );
+        assert_eq!(confirm_mode(false, false, true), ConfirmMode::Prompt);
+        assert_eq!(
+            confirm_mode(true, false, false),
+            ConfirmMode::Skip,
+            "--yes allows non-interactive kills"
+        );
+        assert_eq!(
+            confirm_mode(false, true, false),
+            ConfirmMode::Skip,
+            "--dry-run never kills, so it needs no confirmation"
+        );
+    }
+
+    #[test]
+    fn confirmation_exit_codes() {
+        let declined = confirmation_exit(ConfirmMode::Prompt, || Ok(false))
+            .expect("declining should not be a runtime error");
+        assert_eq!(declined, Some(1), "declining the prompt should exit 1");
+
+        let accepted = confirmation_exit(ConfirmMode::Prompt, || Ok(true))
+            .expect("accepting should not be a runtime error");
+        assert_eq!(accepted, None, "accepting the prompt should proceed");
+
+        let refused = confirmation_exit(ConfirmMode::RefuseNonInteractive, || {
+            panic!("a non-interactive run must not prompt")
+        })
+        .expect("refusal should not be a runtime error");
+        assert_eq!(refused, Some(2), "non-interactive refusal is a usage error");
+
+        let skipped = confirmation_exit(ConfirmMode::Skip, || panic!("--yes must not prompt"))
+            .expect("skipping should not be a runtime error");
+        assert_eq!(skipped, None, "--yes should proceed without prompting");
     }
 
     #[test]
