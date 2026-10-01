@@ -75,7 +75,7 @@ impl Command {
 }
 
 fn main() -> ExitCode {
-    let args = normalize_args();
+    let args = normalize_args(std::env::args_os().skip(1));
     // Check for --trace early (before parsing) so diagnostic output
     // covers the entire argument validation flow.
     let trace_enabled = args.iter().any(|a| a.to_str() == Some("--trace"));
@@ -195,43 +195,80 @@ impl log::Log for StderrTraceLogger {
     fn flush(&self) {}
 }
 
-/// Normalize CLI arguments to lowercase for case-insensitive matching.
+/// Flags whose next argument is a value rather than another flag.
+const VALUE_FLAGS: &[&str] = &["-p", "--port", "--process", "--grep", "--pid"];
+
+/// Subcommand names, matched only in the first non-`--trace` position.
+const SUBCOMMANDS: &[&str] = &["update", "kill"];
+
+/// Normalize CLI arguments for case-insensitive flag matching.
 ///
-/// Skips argv\[0\] (the program name/path) and returns the rest lowercased.
-/// String-valued arguments (`--process`, `--grep`) are lowercased too,
-/// which is intentional because process-name matching is always
-/// case-insensitive.
-fn normalize_args() -> Vec<OsString> {
-    std::env::args_os()
-        .skip(1)
-        .map(|arg| {
-            arg.into_string().map_or_else(
-                |original| original,
-                |s| OsString::from(s.to_ascii_lowercase()),
-            )
-        })
-        .collect()
+/// Expects the arguments without argv\[0\]. Flag names (including the key of
+/// `--flag=value`) and a subcommand in command position are ASCII-lowercased.
+/// Flag values such as the `--grep` or `--process` text are kept as typed:
+/// those filters compare case-insensitively on their own. Arguments that are
+/// not valid Unicode are passed through untouched.
+fn normalize_args(raw: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut normalized: Vec<OsString> = Vec::new();
+    let mut expects_value = false;
+
+    for arg in raw {
+        let text = match arg.into_string() {
+            Ok(text) => text,
+            Err(original) => {
+                expects_value = false;
+                normalized.push(original);
+                continue;
+            }
+        };
+
+        let value = if expects_value {
+            expects_value = false;
+            text
+        } else if text.starts_with('-') {
+            let flag = lowercase_flag_name(&text);
+            expects_value = VALUE_FLAGS.contains(&flag.as_str());
+            flag
+        } else if normalized.iter().all(is_trace_flag)
+            && SUBCOMMANDS
+                .iter()
+                .any(|name| text.eq_ignore_ascii_case(name))
+        {
+            text.to_ascii_lowercase()
+        } else {
+            text
+        };
+        normalized.push(OsString::from(value));
+    }
+
+    normalized
+}
+
+/// Lowercase a flag name, leaving any inline `=value` part as typed.
+fn lowercase_flag_name(flag: &str) -> String {
+    flag.split_once('=').map_or_else(
+        || flag.to_ascii_lowercase(),
+        |(name, value)| format!("{}={value}", name.to_ascii_lowercase()),
+    )
 }
 
 /// Parse CLI arguments into a [`Cli`] struct.
 ///
-/// Subcommands are detected by scanning for the first occurrence of a known
-/// subcommand token (`update`, `kill`); anything after the token is consumed
-/// by the matching subcommand parser. The earliest-occurring token wins so
-/// that `portlens kill update` is parsed as `kill` with a stray `update`
-/// argument (a usage error), not as `update` with a stray `kill` argument.
+/// A subcommand (`update`, `kill`) is recognized only as the first argument,
+/// optionally preceded by `--trace`. Anything after it is consumed by the
+/// matching subcommand parser. A subcommand name anywhere else is either a
+/// flag value (`--grep kill`) or a usage error.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let (main_args, command) = split_main_args_and_command(args)?;
-    reject_mixed_main_and_subcommand_args(&main_args, command.as_ref())?;
     parse_main_cli(main_args, command)
 }
 
 fn split_main_args_and_command(args: Vec<OsString>) -> Result<(Vec<OsString>, Option<Command>)> {
-    let Some(idx) = args
-        .iter()
-        .position(|arg| matches!(arg.to_str(), Some("update" | "kill")))
-    else {
-        return Ok((args, None));
+    let idx = args.iter().take_while(|arg| is_trace_flag(arg)).count();
+    let parse_command = match args.get(idx).and_then(|arg| arg.to_str()) {
+        Some("update") => parse_update_command,
+        Some("kill") => parse_kill_command,
+        _ => return Ok((args, None)),
     };
 
     // `--trace` is global: it may sit before or after the subcommand. Hand
@@ -241,13 +278,8 @@ fn split_main_args_and_command(args: Vec<OsString>) -> Result<(Vec<OsString>, Op
     let (trace_flags, sub_args): (Vec<OsString>, Vec<OsString>) =
         args[idx + 1..].iter().cloned().partition(is_trace_flag);
     main_args.extend(trace_flags);
-    let command = match args[idx].to_str() {
-        Some("update") => parse_update_command(sub_args)?,
-        Some("kill") => parse_kill_command(sub_args)?,
-        _ => unreachable!("subcommand scan only accepts known commands"),
-    };
 
-    Ok((main_args, Some(command)))
+    Ok((main_args, Some(parse_command(sub_args)?)))
 }
 
 fn is_trace_flag(arg: &OsString) -> bool {
@@ -303,23 +335,6 @@ fn validate_kill_selector(port: Option<PortFilter>, pid: Option<u32>) -> Result<
     }
 }
 
-fn reject_mixed_main_and_subcommand_args(
-    main_args: &[OsString],
-    command: Option<&Command>,
-) -> Result<()> {
-    let stray: Vec<&OsString> = main_args.iter().filter(|arg| !is_trace_flag(arg)).collect();
-    if let Some(command) = command
-        && !stray.is_empty()
-    {
-        bail!(
-            "top-level options cannot be used with the '{}' subcommand: {stray:?}",
-            command.name()
-        );
-    }
-
-    Ok(())
-}
-
 fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<Cli> {
     let mut pargs = pico_args::Arguments::from_vec(main_args);
 
@@ -347,6 +362,15 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
     validate_main_flag_conflicts(tcp, udp, listen, process.as_deref(), grep.as_deref())?;
 
     let remaining = pargs.finish();
+    if let Some(name) = remaining
+        .first()
+        .and_then(|arg| arg.to_str())
+        .filter(|arg| SUBCOMMANDS.contains(arg))
+    {
+        bail!(
+            "top-level options cannot be used with the '{name}' subcommand (it must come first): {remaining:?}"
+        );
+    }
     if !remaining.is_empty() {
         bail!("unexpected arguments: {remaining:?}");
     }
@@ -895,6 +919,70 @@ mod tests {
                 .contains("top-level options cannot be used with the 'update' subcommand"),
             "only --trace may accompany a subcommand: {error:#}"
         );
+    }
+
+    #[test]
+    fn parse_cli_treats_subcommand_names_after_value_flags_as_values() {
+        let cli = parse_cli(args(&["--grep", "kill"])).expect("--grep kill should parse");
+        assert!(cli.command.is_none(), "'kill' is the grep pattern here");
+        assert_eq!(cli.grep.as_deref(), Some("kill"));
+
+        let cli =
+            parse_cli(args(&["--process", "update", "-t"])).expect("--process update should parse");
+        assert!(cli.command.is_none(), "'update' is the process name here");
+        assert_eq!(cli.process.as_deref(), Some("update"));
+        assert!(cli.tcp, "flags after the value should still parse");
+    }
+
+    #[test]
+    fn parse_cli_rejects_subcommand_after_top_level_flag() {
+        let error = parse_cli(args(&["-a", "kill", "--pid", "1234"]))
+            .expect_err("a subcommand is only recognized in first position");
+
+        assert!(
+            format!("{error:#}").contains("must come first"),
+            "a misplaced subcommand should get a targeted hint: {error:#}"
+        );
+    }
+
+    #[test]
+    fn normalize_args_lowercases_flags_but_keeps_values() {
+        let normalized = normalize_args(args(&[
+            "--GREP",
+            "MyApp",
+            "-A",
+            "--Process=Node",
+            "--PORT",
+            "3000",
+        ]));
+
+        assert_eq!(
+            normalized,
+            args(&["--grep", "MyApp", "-a", "--process=Node", "--port", "3000"]),
+            "flag names fold to lowercase, values stay as typed"
+        );
+    }
+
+    #[test]
+    fn normalize_args_lowercases_subcommand_only_in_command_position() {
+        assert_eq!(
+            normalize_args(args(&["--TRACE", "KILL", "--PID", "42", "--Dry-Run"])),
+            args(&["--trace", "kill", "--pid", "42", "--dry-run"]),
+            "a leading subcommand is case-insensitive"
+        );
+        assert_eq!(
+            normalize_args(args(&["-a", "Update"])),
+            args(&["-a", "Update"]),
+            "a later positional token is not a subcommand"
+        );
+    }
+
+    #[test]
+    fn mixed_case_grep_value_reaches_the_filter_unchanged() {
+        let cli = parse_cli(normalize_args(args(&["--Grep", "VSCode"])))
+            .expect("mixed-case grep should parse");
+        assert_eq!(cli.grep.as_deref(), Some("VSCode"));
+        assert!(cli.command.is_none(), "no subcommand expected");
     }
 
     #[test]
