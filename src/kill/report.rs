@@ -134,9 +134,11 @@ impl KillReportEntry {
                 KillStatus::ContainerNotFound,
                 Some("the container may have been removed".to_owned()),
             ),
+            // nanodock reports both an unreachable daemon and an unexpected
+            // HTTP status as `Failed`, so the hint must not claim either cause.
             _ => (
                 KillStatus::ContainerStopFailed,
-                Some("could not reach the container runtime daemon".to_owned()),
+                Some(CONTAINER_STOP_FAILED_HINT.to_owned()),
             ),
         };
         Self {
@@ -194,6 +196,10 @@ impl KillReportEntry {
         )
     }
 }
+
+/// Hint attached to `container-stop-failed` entries.
+const CONTAINER_STOP_FAILED_HINT: &str =
+    "the container runtime did not confirm the stop (daemon unreachable or unexpected response)";
 
 #[cfg(windows)]
 const fn elevation_hint() -> &'static str {
@@ -328,6 +334,11 @@ mod tests {
         assert!(
             entry.is_failure(),
             "failed container stop should be a failure"
+        );
+        let hint = entry.hint.as_deref().unwrap_or("");
+        assert!(
+            hint.contains("did not confirm") && !hint.contains("could not reach"),
+            "Failed covers unexpected HTTP statuses too, so the hint must not claim unreachability: {hint}"
         );
     }
 
