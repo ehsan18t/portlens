@@ -199,7 +199,7 @@ fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
 /// Resolve a proxy/helper entry to a unique container target.
 fn container_target_for_entry(
     map: &ContainerPortMap,
-    entry: &crate::types::PortEntry,
+    entry: &PortEntry,
     exe_name: Option<&str>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
     home: Option<&std::path::Path>,
