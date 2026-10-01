@@ -101,6 +101,53 @@ jobs:
             -D rustdoc::private_intra_doc_links
             -D rustdoc::unescaped_backticks
 
+  # Minimum supported Rust version: builds every target on the toolchain named
+  # by `rust-version` in Cargo.toml, so a newer-only API fails here instead of
+  # for users. Lints stay on the stable quality gate.
+  msrv:
+    name: MSRV (Rust 1.89)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.94.1
+        with:
+          toolchain: "1.89"
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          key: msrv
+
+      - name: "MSRV: cargo check --all-targets"
+        run: cargo check --locked --all-targets
+
+  # Package verification: lists the files that would ship to crates.io and runs
+  # a publish dry run, which builds the packaged crate in isolation. Catches a
+  # source file missing from the Cargo.toml `include` list before a release.
+  package:
+    name: Package Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.94.1
+        with:
+          toolchain: stable
+
+      - name: "Package: list files"
+        run: cargo package --locked --list
+
+      - name: "Package: cargo publish --dry-run"
+        run: cargo publish --locked --dry-run
+
   # Advisory gate: Benchmark regression detection.
   #
   # Runs the merge-base benchmarks once to establish a Criterion baseline, then
