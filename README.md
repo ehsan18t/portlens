@@ -96,9 +96,8 @@ Full view (`portlens --full`):
 ```
 
 When stdout is an interactive terminal, PortLens also prints a small shortcut footer to stderr after the table. Redirected and piped stdout stays clean. Hide the footer with `--no-tips` or by setting `PORTLENS_NO_TIPS=1`.
-The table renderer now trims wide text columns to fit the current terminal
-width instead of overflowing past the right edge, and it falls back to the
-compact layout when border overhead alone cannot fit on a narrow terminal.
+
+The table renderer now trims wide text columns to fit the current terminal width instead of overflowing past the right edge, and it falls back to the compact layout when border overhead alone cannot fit on a narrow terminal.
 
 ---
 
