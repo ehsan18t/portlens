@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, bail};
 use log::debug;
 
+use super::platform::{ProcessIdentity, snapshot_identities};
 use crate::collector::{self, CollectOptions};
 use crate::display::sanitize_for_terminal;
 use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
@@ -26,6 +27,9 @@ pub struct Target {
     pub pid: u32,
     /// Best-effort process name, "-" if unknown.
     pub process: String,
+    /// Name and start time captured at resolve time, re-checked right before
+    /// signaling to detect PID reuse. `None` when the process was not visible.
+    pub identity: Option<ProcessIdentity>,
 }
 
 /// A Docker/Podman container to stop via the daemon API.
@@ -68,7 +72,7 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
 
     let container_map = docker::await_detection(docker_handle);
 
-    resolve_targets_from_entries(
+    let mut targets = resolve_targets_from_entries(
         entries,
         filter,
         &container_map,
@@ -76,7 +80,31 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
         &mut docker::RootlessPodmanResolver::default(),
         #[cfg(target_os = "linux")]
         what_stack::home_dir().as_deref(),
-    )
+    )?;
+    attach_identities(&mut targets);
+    Ok(targets)
+}
+
+/// Capture the identity of every process target in one refresh so the kill
+/// step can detect a PID that was reused after resolution.
+fn attach_identities(targets: &mut [ResolvedTarget]) {
+    let pids: Vec<u32> = targets
+        .iter()
+        .filter_map(|t| match t {
+            ResolvedTarget::Process(p) => Some(p.pid),
+            ResolvedTarget::Container(_) => None,
+        })
+        .collect();
+    if pids.is_empty() {
+        return;
+    }
+
+    let identities = snapshot_identities(&pids);
+    for t in targets {
+        if let ResolvedTarget::Process(p) = t {
+            p.identity = identities.get(&p.pid).cloned();
+        }
+    }
 }
 
 fn resolve_targets_from_entries(
@@ -151,6 +179,7 @@ fn append_target_from_entry(
         targets.push(ResolvedTarget::Process(Target {
             pid: entry.pid,
             process: process_name.to_owned(),
+            identity: None,
         }));
     }
 
@@ -225,25 +254,18 @@ fn container_target_for_entry(
 /// Returns a synthetic target with "-" process name when the PID is not
 /// currently enumerable (the kill path still treats that as `AlreadyGone` later).
 pub fn target_for_pid(pid: u32) -> Option<Target> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-
-    let mut sys = System::new();
-    let sys_pid = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[sys_pid]),
-        false,
-        ProcessRefreshKind::nothing(),
-    );
-
-    let process = sys.process(sys_pid)?;
-    let process_name = process.name().to_string_lossy();
-    let process = if process_name.is_empty() {
+    let identity = snapshot_identities(&[pid]).remove(&pid)?;
+    let process = if identity.name.is_empty() {
         "-".to_owned()
     } else {
-        process_name.into_owned()
+        identity.name.clone()
     };
 
-    Some(Target { pid, process })
+    Some(Target {
+        pid,
+        process,
+        identity: Some(identity),
+    })
 }
 
 #[cfg(test)]
@@ -384,6 +406,19 @@ mod tests {
     }
 
     #[test]
+    fn target_for_pid_captures_identity() {
+        let target = target_for_pid(std::process::id())
+            .expect("the test process should resolve to a kill target");
+        let identity = target
+            .identity
+            .expect("a visible pid should carry a resolve-time identity");
+        assert_eq!(
+            target.process, identity.name,
+            "display name and identity name should come from the same snapshot"
+        );
+    }
+
+    #[test]
     fn target_for_pid_returns_none_when_process_is_missing() {
         assert!(
             target_for_pid(u32::MAX).is_none(),
@@ -479,7 +514,7 @@ mod tests {
         );
         assert!(matches!(
             &targets[0],
-            ResolvedTarget::Process(Target { pid, process }) if *pid == 4242 && process == "node"
+            ResolvedTarget::Process(Target { pid, process, .. }) if *pid == 4242 && process == "node"
         ));
     }
 }

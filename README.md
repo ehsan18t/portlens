@@ -215,6 +215,8 @@ Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 
 
 When stdin is not a terminal (scripts, pipes, editor tasks), `kill` refuses to run without `--yes` or `--dry-run` instead of skipping the prompt. The check happens before any targets are resolved, so it exits 2 even when nothing would match.
 
+Each target's process name and start time are captured when it is resolved and checked again right before it is signaled. If the PID now belongs to a different process, it is left alone and reported as `process-changed`. On Windows the check and the termination use the same process handle.
+
 **Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable or does not confirm the stop, the failure is reported explicitly. Use `--pid` if you genuinely need to signal the proxy process directly.
 
 ### Subcommand: `update`
@@ -305,12 +307,12 @@ For environment-specific debugging, run with `--trace` to emit diagnostic output
 
 ## Exit Codes
 
-| Code | Meaning                                                                                                                     |
-| ---- | --------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success                                                                                                                     |
-| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed), or the `kill` confirmation prompt was declined |
-| 2    | Usage error (invalid flag combination, missing required argument, or `kill` without `--yes` when stdin is not a terminal)   |
-| 3    | `kill` selector matched no live process                                                                                     |
+| Code | Meaning                                                                                                                                             |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success                                                                                                                                             |
+| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed, including a reused PID), or the `kill` confirmation prompt was declined |
+| 2    | Usage error (invalid flag combination, missing required argument, or `kill` without `--yes` when stdin is not a terminal)                           |
+| 3    | `kill` selector matched no live process                                                                                                             |
 
 ---
 

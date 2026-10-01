@@ -26,6 +26,10 @@ pub enum KillStatus {
     /// OS refused the signal (insufficient privileges).
     #[serde(rename = "permission-denied")]
     PermissionDenied,
+    /// The PID now belongs to a different process than the one resolved
+    /// (PID reuse or unverifiable identity); nothing was signaled.
+    #[serde(rename = "process-changed")]
+    ProcessChanged,
     /// Signal delivery failed for an OS-specific reason.
     #[cfg(unix)]
     #[serde(rename = "failed")]
@@ -89,6 +93,10 @@ impl KillReportEntry {
             KillOutcome::PermissionDenied => (
                 KillStatus::PermissionDenied,
                 Some(elevation_hint().to_owned()),
+            ),
+            KillOutcome::ProcessChanged => (
+                KillStatus::ProcessChanged,
+                Some(PROCESS_CHANGED_HINT.to_owned()),
             ),
             #[cfg(unix)]
             KillOutcome::Failed => (KillStatus::Failed, None),
@@ -178,6 +186,7 @@ impl KillReportEntry {
         matches!(
             self.status,
             KillStatus::PermissionDenied
+                | KillStatus::ProcessChanged
                 | KillStatus::Failed
                 | KillStatus::ContainerStopFailed
                 | KillStatus::ContainerNotFound
@@ -191,11 +200,15 @@ impl KillReportEntry {
         matches!(
             self.status,
             KillStatus::PermissionDenied
+                | KillStatus::ProcessChanged
                 | KillStatus::ContainerStopFailed
                 | KillStatus::ContainerNotFound
         )
     }
 }
+
+/// Hint attached to `process-changed` entries.
+const PROCESS_CHANGED_HINT: &str = "the pid now belongs to a different process (or its identity could not be verified); nothing was killed, re-run to resolve targets again";
 
 /// Hint attached to `container-stop-failed` entries.
 const CONTAINER_STOP_FAILED_HINT: &str =
@@ -230,6 +243,12 @@ fn format_process_line(e: &KillReportEntry) -> String {
         KillStatus::AlreadyExited => format!("pid {} already exited ({})", e.pid, e.process),
         KillStatus::PermissionDenied => format!(
             "permission denied killing pid {} ({}); {}",
+            e.pid,
+            e.process,
+            e.hint.as_deref().unwrap_or("")
+        ),
+        KillStatus::ProcessChanged => format!(
+            "not killing pid {} ({}): {}",
             e.pid,
             e.process,
             e.hint.as_deref().unwrap_or("")
@@ -339,6 +358,26 @@ mod tests {
         assert!(
             hint.contains("did not confirm") && !hint.contains("could not reach"),
             "Failed covers unexpected HTTP statuses too, so the hint must not claim unreachability: {hint}"
+        );
+    }
+
+    #[test]
+    fn process_changed_outcome_is_distinct_failure() {
+        let entry =
+            KillReportEntry::from_outcome(1234, "node".to_string(), KillOutcome::ProcessChanged);
+        assert_eq!(entry.status, KillStatus::ProcessChanged);
+        assert!(
+            entry.is_failure(),
+            "an unverified target was not killed, so it must count as a failure"
+        );
+        assert_eq!(
+            serde_json::to_value(entry.status).expect("status should serialize"),
+            serde_json::json!("process-changed"),
+            "JSON status token should be stable"
+        );
+        assert!(
+            format_process_line(&entry).starts_with("not killing pid 1234 (node)"),
+            "human output should say the pid was not killed"
         );
     }
 

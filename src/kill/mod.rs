@@ -96,8 +96,8 @@ fn confirmation_exit(mode: ConfirmMode, ask: impl FnOnce() -> Result<bool>) -> R
 /// Returns `Ok(exit_code)` where:
 /// - `0`: every resolved target succeeded (or was already gone), or a dry run
 ///   with at least one target.
-/// - `1`: at least one target failed (permission denied, other errors), or
-///   the user declined the confirmation prompt.
+/// - `1`: at least one target failed (permission denied, pid reused, other
+///   errors), or the user declined the confirmation prompt.
 /// - `2`: confirmation is required but stdin is not a terminal; pass `--yes`.
 ///   Checked before targets are resolved.
 /// - `3`: nothing to kill (no PID matched the selector).
@@ -177,7 +177,7 @@ fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
                 "killing process: pid={} process={} force={force}",
                 t.pid, t.process
             );
-            let outcome = kill_pid(t.pid, force);
+            let outcome = kill_pid(t.pid, t.identity.as_ref(), force);
             KillReportEntry::from_outcome(t.pid, t.process, outcome)
         }
         ResolvedTarget::Container(ct) => {
@@ -206,6 +206,7 @@ fn resolve_pid_target(pid: u32) -> Option<ResolvedTarget> {
         let target = target_for_pid(pid).unwrap_or_else(|| Target {
             pid,
             process: "-".to_owned(),
+            identity: None,
         });
         return Some(ResolvedTarget::Process(target));
     }
@@ -416,6 +417,7 @@ mod tests {
         let targets = vec![ResolvedTarget::Process(Target {
             pid: 1234,
             process: "node".to_string(),
+            identity: None,
         })];
 
         let report = dry_run_report(&targets, false);
@@ -429,6 +431,7 @@ mod tests {
         let targets = vec![ResolvedTarget::Process(Target {
             pid: 1234,
             process: "node".to_string(),
+            identity: None,
         })];
 
         let report = dry_run_report(&targets, true);
@@ -535,6 +538,7 @@ mod tests {
             ResolvedTarget::Process(Target {
                 pid: 1,
                 process: "node".to_string(),
+                identity: None,
             }),
             ResolvedTarget::Container(ContainerTarget {
                 container_id: "abc".to_string(),
@@ -546,6 +550,7 @@ mod tests {
             ResolvedTarget::Process(Target {
                 pid: 3,
                 process: "python".to_string(),
+                identity: None,
             }),
         ];
         let (n_proc, n_ctr) = count_target_kinds(&targets);
