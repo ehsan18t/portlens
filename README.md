@@ -95,8 +95,7 @@ Full view (`portlens --full`):
 ╰───────┴───────┴───────────┴────────┴──────────┴──────┴──────────┴────────────────────┴────────────┴────────╯
 ```
 
-When stdout is an interactive terminal, PortLens also prints a small shortcut
-footer to stderr after the table. Redirected and piped stdout stays clean.
+When stdout is an interactive terminal, PortLens also prints a small shortcut footer to stderr after the table. Redirected and piped stdout stays clean. Hide the footer with `--no-tips` or by setting `PORTLENS_NO_TIPS=1`.
 The table renderer now trims wide text columns to fit the current terminal
 width instead of overflowing past the right edge, and it falls back to the
 compact layout when border overhead alone cannot fit on a narrow terminal.
@@ -135,6 +134,12 @@ Release builds use a size-focused profile (`opt-level = "z"`, LTO, symbol
 stripping, single codegen unit, and `panic = "abort"`) so the shipped CLI
 stays compact, especially on Windows.
 
+### Option C: Install via Cargo
+
+```bash
+cargo install portlens
+```
+
 ## Benchmarking
 
 The repository uses Criterion for microbenchmarks. Run the suite locally with:
@@ -158,12 +163,6 @@ current `assets/icon.png` is source artwork only. Add a multi-size `.ico` file
 at `assets/icon.ico` with at least `16x16`, `32x32`, `48x48`, and `256x256`
 images so Windows can select the best size for Explorer and shell views.
 
-### Option C: Install via Cargo
-
-```bash
-cargo install portlens
-```
-
 ---
 
 ## CLI Reference
@@ -183,6 +182,7 @@ cargo install portlens
 | `--json`           |       | Output results as a JSON array                                                             |
 | `--no-enrich`      |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
 | `--no-tips`        |       | Hide the tips panel shown after the table (same as setting `PORTLENS_NO_TIPS`)             |
+| `--trace`          |       | Print diagnostic trace logs to stderr; also accepted with `kill` and `update`              |
 | `--version`        | `-v`  | Print the version string and exit                                                          |
 | `--help`           | `-h`  | Print usage information and exit                                                           |
 
@@ -260,6 +260,25 @@ Additional columns with `--full`:
 | STATE   | Best-effort TCP state. On Windows each row gets the state of its own owning process; on Linux shared local sockets prefer `LISTEN`. Missing or ambiguous data shows `UNKNOWN`, UDP shows `-` |
 | USER    | Owning user. Shows `-` if unavailable. On Windows, PortLens prefers the account name and falls back to a SID string when needed                                                              |
 
+### JSON Output
+
+`--json` prints a pretty-printed JSON array with one object per socket, or `[]` when nothing matches. Every object always has every field below, whatever the table flags: `--full`, `--compact` and `--no-header` do not affect JSON output. The filters (`--all`, `--tcp`, `--port`, `--grep` and so on) apply as usual.
+
+| Field         | Type             | Meaning                                                                                                                         |
+| ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `port`        | number           | Local port number                                                                                                               |
+| `local_addr`  | string           | Local bind address, IPv4 (`"127.0.0.1"`) or IPv6 (`"::1"`)                                                                      |
+| `proto`       | string           | `"TCP"` or `"UDP"`                                                                                                              |
+| `state`       | string           | TCP state such as `"LISTEN"`, `"ESTABLISHED"` or `"TIME_WAIT"`; `"UNKNOWN"` when it cannot be determined reliably; `"-"` for UDP |
+| `pid`         | number           | Owning process ID                                                                                                               |
+| `process`     | string           | Process name as reported by the OS (on Windows this includes the `.exe` suffix)                                                 |
+| `user`        | string           | Owning user or account name (a SID string on Windows when no name resolves), or `"-"` if unavailable                            |
+| `project`     | string or `null` | Project directory name or Docker/Podman container name, `null` when none was detected                                           |
+| `app`         | string or `null` | Detected app or framework label (for example `"Next.js"` or `"PostgreSQL"`), `null` when none was detected                      |
+| `uptime_secs` | number or `null` | Process uptime in seconds, `null` when unavailable                                                                              |
+
+The other `state` values are `"SYN_SENT"`, `"SYN_RECV"`, `"FIN_WAIT1"`, `"FIN_WAIT2"`, `"CLOSE"`, `"CLOSE_WAIT"`, `"LAST_ACK"`, `"CLOSING"`, `"NEW_SYN_RECV"` (Linux) and `"DELETE_TCB"` (Windows). `kill --json` emits its own report format, not this one.
+
 ### Piped and Redirected Output
 
 When stdout is a file or a pipe, PortLens never truncates rows to fit a width, even if `COLUMNS` is set, so `portlens | grep node` always sees full process names. `COLUMNS` only overrides the detected width when stdout is a terminal.
@@ -320,6 +339,15 @@ For environment-specific debugging, run with `--trace` to emit diagnostic output
 | Linux (kernel 4.x+)  | x86_64       | Supported |
 | Windows 10 / 11      | x86_64       | Supported |
 | Windows Server 2019+ | x86_64       | Supported |
+
+---
+
+## Environment Variables
+
+| Variable           | Effect                                                                                                    |
+| ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `PORTLENS_NO_TIPS` | Any non-empty value hides the tips panel, like `--no-tips`. An empty value is ignored                     |
+| `COLUMNS`          | Overrides the detected terminal width when stdout is a terminal. Ignored for piped or redirected output   |
 
 ---
 
