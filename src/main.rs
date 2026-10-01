@@ -234,8 +234,13 @@ fn split_main_args_and_command(args: Vec<OsString>) -> Result<(Vec<OsString>, Op
         return Ok((args, None));
     };
 
-    let main_args = args[..idx].to_vec();
-    let sub_args = args[idx + 1..].to_vec();
+    // `--trace` is global: it may sit before or after the subcommand. Hand
+    // every occurrence to the top-level parser so the subcommand parsers
+    // never see it.
+    let mut main_args = args[..idx].to_vec();
+    let (trace_flags, sub_args): (Vec<OsString>, Vec<OsString>) =
+        args[idx + 1..].iter().cloned().partition(is_trace_flag);
+    main_args.extend(trace_flags);
     let command = match args[idx].to_str() {
         Some("update") => parse_update_command(sub_args)?,
         Some("kill") => parse_kill_command(sub_args)?,
@@ -243,6 +248,10 @@ fn split_main_args_and_command(args: Vec<OsString>) -> Result<(Vec<OsString>, Op
     };
 
     Ok((main_args, Some(command)))
+}
+
+fn is_trace_flag(arg: &OsString) -> bool {
+    arg.to_str() == Some("--trace")
 }
 
 fn parse_update_command(args: Vec<OsString>) -> Result<Command> {
@@ -298,11 +307,12 @@ fn reject_mixed_main_and_subcommand_args(
     main_args: &[OsString],
     command: Option<&Command>,
 ) -> Result<()> {
+    let stray: Vec<&OsString> = main_args.iter().filter(|arg| !is_trace_flag(arg)).collect();
     if let Some(command) = command
-        && !main_args.is_empty()
+        && !stray.is_empty()
     {
         bail!(
-            "top-level options cannot be used with the '{}' subcommand: {main_args:?}",
+            "top-level options cannot be used with the '{}' subcommand: {stray:?}",
             command.name()
         );
     }
@@ -818,6 +828,72 @@ mod tests {
             format!("{error:#}")
                 .contains("top-level options cannot be used with the 'update' subcommand"),
             "update should reject stray top-level flags before the subcommand"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_trace_before_subcommands() {
+        let cli = parse_cli(args(&["--trace", "update", "--check"]))
+            .expect("--trace before update should parse");
+        assert!(cli.trace, "leading --trace should enable tracing");
+        assert!(
+            matches!(cli.command, Some(Command::Update { check: true })),
+            "update --check should still parse"
+        );
+
+        let cli = parse_cli(args(&["--trace", "kill", "--pid", "1234", "--dry-run"]))
+            .expect("--trace before kill should parse");
+        assert!(cli.trace, "leading --trace should enable tracing");
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Kill {
+                    pid: Some(1234),
+                    dry_run: true,
+                    ..
+                })
+            ),
+            "kill options should still parse"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_trace_after_subcommands() {
+        let cli = parse_cli(args(&["update", "--check", "--trace"]))
+            .expect("--trace after update should parse");
+        assert!(cli.trace, "trailing --trace should enable tracing");
+        assert!(
+            matches!(cli.command, Some(Command::Update { check: true })),
+            "update --check should still parse"
+        );
+
+        let cli = parse_cli(args(&["kill", "--trace", "--port", "3000", "--dry-run"]))
+            .expect("--trace inside kill options should parse");
+        assert!(
+            cli.trace,
+            "--trace among kill options should enable tracing"
+        );
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Kill {
+                    port: Some(PortFilter::Single(3000)),
+                    ..
+                })
+            ),
+            "kill --port should still parse"
+        );
+    }
+
+    #[test]
+    fn parse_cli_still_rejects_other_flags_before_subcommand_with_trace() {
+        let error = parse_cli(args(&["--trace", "--json", "update"]))
+            .expect_err("--json is not a valid top-level option for update");
+
+        assert!(
+            format!("{error:#}")
+                .contains("top-level options cannot be used with the 'update' subcommand"),
+            "only --trace may accompany a subcommand: {error:#}"
         );
     }
 
