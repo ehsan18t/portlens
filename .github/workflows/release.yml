@@ -4,6 +4,11 @@
 # Asset names use the normalized version number without a leading `v` so they
 # stay consistent with README examples and the updater's preferred lookup.
 #
+# The release also carries a SHA256SUMS manifest (sha256sum format) covering
+# every binary asset, plus GitHub build provenance attestations. `portlens
+# update` refuses to install any release that lacks SHA256SUMS, so every
+# release must be produced by this workflow.
+#
 # Trigger: Actions tab > Release > Run workflow > enter version tag (e.g. v0.1.0)
 
 name: Release
@@ -23,8 +28,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify-version:
+    name: Verify tag matches Cargo.toml version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # A tag that differs from the package version produces binaries whose
+      # --version never matches the release, so `portlens update` would
+      # reinstall forever (and now fails its post-download smoke test).
+      - name: Check tag matches package version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          tag_version="${TAG#v}"
+          tag_version="${tag_version#V}"
+          pkg_version="$(awk -F'"' '/^\[/ { in_pkg = ($0 == "[package]") } in_pkg && /^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)"
+          if [ -z "$pkg_version" ]; then
+            echo "::error::Could not read [package] version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag '$TAG' (version $tag_version) does not match Cargo.toml version $pkg_version"
+            exit 1
+          fi
+          echo "Tag '$TAG' matches Cargo.toml version $pkg_version"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -108,6 +142,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -117,6 +155,27 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: dist/
+
+      # sha256sum output format: "<hex>  <file>" per line. The updater
+      # downloads this file and refuses to install on a missing entry or a
+      # digest mismatch.
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(portlens-*)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::No release assets found in dist/"
+            exit 1
+          fi
+          sha256sum -- "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/portlens-*
 
       - name: List release assets
         run: ls -lhR dist/
