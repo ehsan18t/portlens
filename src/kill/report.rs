@@ -161,8 +161,8 @@ impl KillReportEntry {
                 KillStatus::ContainerNotFound,
                 Some("the container may have been removed".to_owned()),
             ),
-            // nanodock reports both an unreachable daemon and an unexpected
-            // HTTP status as `Failed`, so the hint must not claim either cause.
+            // Unreachable, NoResponse, Rejected, and any future variant share
+            // one generic hint that does not claim a specific cause.
             _ => (
                 KillStatus::ContainerStopFailed,
                 Some(CONTAINER_STOP_FAILED_HINT.to_owned()),
@@ -374,7 +374,7 @@ mod tests {
             proxy_pid: 300,
             proxy_process: "docker-proxy".to_string(),
         };
-        let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::Failed);
+        let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::NoResponse);
         assert_eq!(entry.status, KillStatus::ContainerStopFailed);
         assert!(
             entry.is_failure(),
@@ -383,7 +383,7 @@ mod tests {
         let hint = entry.hint.as_deref().unwrap_or("");
         assert!(
             hint.contains("did not confirm") && !hint.contains("could not reach"),
-            "Failed covers unexpected HTTP statuses too, so the hint must not claim unreachability: {hint}"
+            "the generic hint must not claim unreachability: {hint}"
         );
     }
 

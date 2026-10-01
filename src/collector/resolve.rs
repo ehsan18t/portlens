@@ -6,7 +6,7 @@
 
 use std::net::SocketAddr;
 
-use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
+use crate::docker::{self, ContainerPortMap, ProxyFallback};
 use crate::types::Protocol;
 
 use super::CollectContext;
@@ -59,13 +59,17 @@ fn lookup_container<'a>(
     process_name: &str,
     exe_name: Option<&str>,
 ) -> Option<&'a docker::ContainerInfo> {
-    let allow_proxy_fallback = dedup::is_docker_proxy_process(process_name)
-        || exe_name.is_some_and(dedup::is_docker_proxy_process);
+    let fallback = if dedup::is_docker_proxy_process(process_name)
+        || exe_name.is_some_and(dedup::is_docker_proxy_process)
+    {
+        ProxyFallback::Allow
+    } else {
+        ProxyFallback::Deny
+    };
 
-    match docker::lookup_published_container(container_map, socket, proto, allow_proxy_fallback) {
-        PublishedContainerMatch::Match(container) => Some(container),
-        _ => None,
-    }
+    container_map
+        .lookup(socket.ip(), socket.port(), proto, fallback)
+        .container()
 }
 
 #[cfg(target_os = "linux")]
@@ -82,15 +86,10 @@ fn rootless_podman_process_name<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     fn make_container(name: &str, image: &str) -> docker::ContainerInfo {
-        docker::ContainerInfo {
-            id: String::new(),
-            name: name.to_string(),
-            image: image.to_string(),
-        }
+        docker::ContainerInfo::new("", name, image)
     }
 
     fn insert_container(
@@ -101,7 +100,9 @@ mod tests {
         image: &str,
     ) {
         map.insert(
-            (Some(address), port, Protocol::Tcp),
+            Some(address),
+            port,
+            Protocol::Tcp,
             make_container(name, image),
         );
     }
@@ -115,7 +116,7 @@ mod tests {
 
     #[test]
     fn container_lookup_prefers_exact_address_matches() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         insert_container(
             &mut map,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -148,7 +149,7 @@ mod tests {
 
     #[test]
     fn container_lookup_uses_proxy_fallback_for_unique_port_mapping() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         insert_container(
             &mut map,
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -169,7 +170,7 @@ mod tests {
 
     #[test]
     fn container_lookup_uses_proxy_fallback_for_rootlessport() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         insert_container(
             &mut map,
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -190,7 +191,7 @@ mod tests {
 
     #[test]
     fn container_lookup_uses_exe_name_for_proxy_fallback() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         insert_container(
             &mut map,
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -211,17 +212,17 @@ mod tests {
 
     #[test]
     fn container_lookup_refuses_ambiguous_proxy_matches() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
             make_container("api-a", "node:22"),
         );
         map.insert(
-            (
-                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                8080,
-                Protocol::Tcp,
-            ),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            8080,
+            Protocol::Tcp,
             make_container("api-b", "node:22"),
         );
 
@@ -240,19 +241,19 @@ mod tests {
 
     #[test]
     fn container_lookup_keeps_proxy_fallback_when_all_matches_agree() {
-        let mut map = HashMap::new();
+        let mut map = ContainerPortMap::new();
         let container_info = make_container("shared-api", "node:22");
 
         map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
             container_info.clone(),
         );
         map.insert(
-            (
-                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                8080,
-                Protocol::Tcp,
-            ),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            8080,
+            Protocol::Tcp,
             container_info,
         );
 

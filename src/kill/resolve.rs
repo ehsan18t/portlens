@@ -8,15 +8,13 @@
 //! a [`ContainerTarget`] instead of a process target so the kill flow can
 //! stop the container via the daemon API rather than killing the proxy PID.
 
-use std::net::SocketAddr;
-
 use anyhow::{Result, bail};
 use log::debug;
 
 use super::platform::{ProcessIdentity, snapshot_identities};
 use crate::collector::{self, CollectOptions};
 use crate::display::sanitize_for_terminal;
-use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
+use crate::docker::{self, ContainerPortMap, ProxyFallback, PublishedContainerMatch};
 use crate::filter::PortFilter;
 use crate::types::{PortEntry, Protocol, State};
 
@@ -70,7 +68,7 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
         deep_enrichment: false,
     })?;
 
-    let container_map = docker::await_detection(docker_handle);
+    let container_map = docker_handle.wait();
 
     let mut targets = resolve_targets_from_entries(
         entries,
@@ -197,8 +195,12 @@ fn container_target_for_entry(
     #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
     #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
 ) -> Result<ContainerTarget> {
-    let socket = SocketAddr::new(entry.local_addr, entry.port);
-    let api_match = docker::lookup_published_container(map, socket, entry.proto, true);
+    let api_match = map.lookup(
+        entry.local_addr,
+        entry.port,
+        entry.proto,
+        ProxyFallback::Allow,
+    );
 
     let info = match api_match {
         PublishedContainerMatch::Match(info) => Some(info.clone()),
@@ -299,12 +301,10 @@ mod tests {
         image: &str,
     ) {
         map.insert(
-            (host_ip, port, proto),
-            docker::ContainerInfo {
-                id: id.to_string(),
-                name: name.to_string(),
-                image: image.to_string(),
-            },
+            host_ip,
+            port,
+            proto,
+            docker::ContainerInfo::new(id, name, image),
         );
     }
 

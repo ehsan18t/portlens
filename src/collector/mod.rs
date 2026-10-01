@@ -128,7 +128,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     // Block on Docker results only after all other I/O is done.
     let container_map =
-        docker_handle.map_or_else(ContainerPortMap::default, docker::await_detection);
+        docker_handle.map_or_else(ContainerPortMap::default, docker::DetectionHandle::wait);
     let tcp_states = tcp_state::load_tcp_state_index();
     let now_epoch = current_epoch_secs();
 
