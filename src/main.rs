@@ -4,7 +4,7 @@
 //! output to stdout.
 
 use std::ffi::OsString;
-use std::io::{IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
@@ -87,12 +87,10 @@ fn main() -> ExitCode {
     for arg in &args {
         match arg.to_str() {
             Some("--help" | "-h") => {
-                print_help();
-                return ExitCode::SUCCESS;
+                return exit_after_output(write_help(&mut io::stdout().lock()));
             }
             Some("--version" | "-v") => {
-                print_version();
-                return ExitCode::SUCCESS;
+                return exit_after_output(write_version(&mut io::stdout().lock()));
             }
             _ => {}
         }
@@ -111,12 +109,51 @@ fn main() -> ExitCode {
 
     match run(cli) {
         Ok(code) => ExitCode::from(code),
+        Err(e) if is_broken_pipe(&e) => {
+            // The reader went away (e.g. `portlens | head -1`). That is a
+            // normal way for a pipeline to end, not a failure.
+            debug!("output pipe closed early: {e:#}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             debug!("runtime failed: {e:#}");
             eprintln!("error: {e:#}");
             ExitCode::from(EXIT_RUNTIME_ERROR)
         }
     }
+}
+
+/// Map the result of writing help or version text to an exit code.
+///
+/// A closed pipe (`portlens --help | head -1`) is a clean exit; any other
+/// write failure is reported as a runtime error.
+fn exit_after_output(result: io::Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            // stderr may be gone too; there is nowhere left to report that.
+            writeln!(io::stderr().lock(), "error: failed to write to stdout: {e}").ok();
+            ExitCode::from(EXIT_RUNTIME_ERROR)
+        }
+    }
+}
+
+/// Check whether an error was caused by writing to a closed pipe.
+///
+/// Walks the whole `anyhow` context chain. `serde_json` errors are checked
+/// separately because `serde_json::Error` does not expose the wrapped
+/// `io::Error` through `source()`.
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+            || cause
+                .downcast_ref::<serde_json::Error>()
+                .and_then(serde_json::Error::io_error_kind)
+                == Some(io::ErrorKind::BrokenPipe)
+    })
 }
 
 /// Initialize the global stderr logger.
@@ -143,7 +180,15 @@ impl log::Log for StderrTraceLogger {
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
             let module = record.module_path().unwrap_or("-");
-            eprintln!("[{} {module}] {}", record.level(), record.args());
+            // Trace output must never abort the process when stderr is a
+            // closed pipe, so write errors are deliberately dropped.
+            writeln!(
+                io::stderr().lock(),
+                "[{} {module}] {}",
+                record.level(),
+                record.args()
+            )
+            .ok();
         }
     }
 
@@ -356,52 +401,60 @@ fn validate_port_filter(port: Option<PortFilter>) -> Result<()> {
     Ok(())
 }
 
-fn print_help() {
-    let version = env!("CARGO_PKG_VERSION");
-    println!("PortLens {version}");
-    println!("List open network ports and their associated processes.");
-    println!();
-    println!("Usage: portlens [OPTIONS] [COMMAND]");
-    println!();
-    println!("Commands:");
-    println!("  update  Check for updates and optionally self-update the binary");
-    println!("  kill    Terminate processes by --port or --pid");
-    println!();
-    println!("Options:");
-    println!("  -t, --tcp            Show only TCP sockets");
-    println!("  -u, --udp            Show only UDP sockets");
-    println!("  -l, --listen         Show only sockets in LISTEN state (TCP only)");
-    println!("  -p, --port <PORT>    Filter results to a port or range (e.g. 3000 or 3000-4000)");
-    println!("      --process <NAME> Filter by exact process name (without .exe suffix)");
-    println!("      --grep <TEXT>    Filter by substring match in process name");
-    println!("  -a, --all            Show all ports (disable developer-relevant filter)");
-    println!("  -f, --full           Show all columns (adds STATE, USER)");
-    println!("  -c, --compact        Use compact borderless table style");
-    println!("      --no-header      Suppress the column header row");
-    println!("      --json           Output results as a JSON array");
-    println!("      --no-enrich      Disable Docker/Podman and project-root enrichment");
-    println!("      --trace          Emit diagnostic trace to stderr for debugging");
-    println!("  -h, --help           Print help");
-    println!("  -v, --version        Print version");
-    println!();
-    println!("Subcommand 'update' options:");
-    println!("      --check          Only check for a new version; do not install");
-    println!();
-    println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
-    println!("  -p, --port <PORT>    Kill TCP listeners or UDP binders on a local port or range");
-    println!("                       (e.g. 3000 or 3000-4000)");
-    println!("                       (stops published containers via daemon API, not proxy PID)");
-    println!("                       (use --pid if daemon lookup fails or is ambiguous)");
-    println!("      --pid <PID>      Kill the given PID");
-    println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
-    println!("  -y, --yes            Skip interactive confirmation");
-    println!("                       (required when stdin is not a terminal)");
-    println!("      --dry-run        List targets without killing anything");
-    println!("      --json           Emit the kill report or dry-run target list as JSON");
+/// Help text printed after the `PortLens <version>` line.
+const HELP_BODY: &str = "\
+List open network ports and their associated processes.
+
+Usage: portlens [OPTIONS] [COMMAND]
+
+Commands:
+  update  Check for updates and optionally self-update the binary
+  kill    Terminate processes by --port or --pid
+
+Options:
+  -t, --tcp            Show only TCP sockets
+  -u, --udp            Show only UDP sockets
+  -l, --listen         Show only sockets in LISTEN state (TCP only)
+  -p, --port <PORT>    Filter results to a port or range (e.g. 3000 or 3000-4000)
+      --process <NAME> Filter by exact process name (without .exe suffix)
+      --grep <TEXT>    Filter by substring match in process name
+  -a, --all            Show all ports (disable developer-relevant filter)
+  -f, --full           Show all columns (adds STATE, USER)
+  -c, --compact        Use compact borderless table style
+      --no-header      Suppress the column header row
+      --json           Output results as a JSON array
+      --no-enrich      Disable Docker/Podman and project-root enrichment
+      --trace          Emit diagnostic trace to stderr for debugging
+  -h, --help           Print help
+  -v, --version        Print version
+
+Subcommand 'update' options:
+      --check          Only check for a new version; do not install
+
+Subcommand 'kill' options (exactly one of --port or --pid is required):
+  -p, --port <PORT>    Kill TCP listeners or UDP binders on a local port or range
+                       (e.g. 3000 or 3000-4000)
+                       (stops published containers via daemon API, not proxy PID)
+                       (use --pid if daemon lookup fails or is ambiguous)
+      --pid <PID>      Kill the given PID
+  -f, --force          Forceful termination (SIGKILL on Unix)
+  -y, --yes            Skip interactive confirmation
+                       (required when stdin is not a terminal)
+      --dry-run        List targets without killing anything
+      --json           Emit the kill report or dry-run target list as JSON
+";
+
+/// Write the `--help` text.
+fn write_help(out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "PortLens {}", env!("CARGO_PKG_VERSION"))?;
+    out.write_all(HELP_BODY.as_bytes())?;
+    out.flush()
 }
 
-fn print_version() {
-    println!("PortLens {}", env!("CARGO_PKG_VERSION"));
+/// Write the `--version` text.
+fn write_version(out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "PortLens {}", env!("CARGO_PKG_VERSION"))?;
+    out.flush()
 }
 
 /// Application entry point, separated from `main()` for testability.
@@ -518,6 +571,84 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    /// A writer whose reader has gone away, like stdout piped into `head -1`.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn help_and_version_surface_broken_pipe_instead_of_panicking() {
+        let help = write_help(&mut ClosedPipe).expect_err("closed pipe should fail");
+        assert_eq!(help.kind(), io::ErrorKind::BrokenPipe);
+
+        let version = write_version(&mut ClosedPipe).expect_err("closed pipe should fail");
+        assert_eq!(version.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn help_text_lists_every_command() {
+        let mut buffer = Vec::new();
+        write_help(&mut buffer).expect("writing help to a buffer should succeed");
+        let help = String::from_utf8(buffer).expect("help should be UTF-8");
+
+        assert!(
+            help.starts_with("PortLens "),
+            "help should start with the name"
+        );
+        assert!(
+            help.contains("  kill "),
+            "help should list the kill command"
+        );
+        assert!(
+            help.contains("  update "),
+            "help should list the update command"
+        );
+    }
+
+    #[test]
+    fn is_broken_pipe_detects_io_error_behind_context() {
+        let error = writeln!(ClosedPipe, "row")
+            .context("failed to write table to stdout")
+            .expect_err("closed pipe should fail");
+
+        assert!(
+            is_broken_pipe(&error),
+            "context must not hide the pipe error"
+        );
+    }
+
+    #[test]
+    fn is_broken_pipe_detects_serde_json_io_error() {
+        let error = serde_json::to_writer(ClosedPipe, &[1, 2, 3])
+            .context("failed to serialize kill report")
+            .expect_err("closed pipe should fail");
+
+        assert!(
+            is_broken_pipe(&error),
+            "serde_json must not hide the pipe error"
+        );
+    }
+
+    #[test]
+    fn is_broken_pipe_ignores_other_errors() {
+        let io_error = anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(
+            !is_broken_pipe(&io_error),
+            "only BrokenPipe is a clean exit"
+        );
+
+        let plain = anyhow::anyhow!("failed to enumerate sockets");
+        assert!(!is_broken_pipe(&plain), "non-io errors are real failures");
     }
 
     #[test]
