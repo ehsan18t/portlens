@@ -97,7 +97,8 @@ pub fn sanitize_for_terminal(value: &str) -> Cow<'_, str> {
 }
 
 /// Whether `ch` can alter terminal state or visual ordering when printed.
-const fn is_terminal_unsafe(ch: char) -> bool {
+// Not `const`: `char::is_control` is only const since Rust 1.97, above the MSRV.
+fn is_terminal_unsafe(ch: char) -> bool {
     ch.is_control()
         || matches!(
             ch,

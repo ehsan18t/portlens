@@ -2,6 +2,8 @@
 name = "portlens"
 version = "0.1.0"
 edition = "2024"
+# 1.89: nanodock calls `str::eq_ignore_ascii_case` in a const fn.
+rust-version = "1.89"
 authors = ["Ehsan Khan"]
 description = "PortLens is a cross-platform CLI tool that lists open network ports and their associated processes"
 license = "MIT"
@@ -9,6 +11,10 @@ readme = "README.md"
 keywords = ["port", "network", "socket", "process", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 repository = "https://github.com/ehsan18t/portlens"
+homepage = "https://github.com/ehsan18t/portlens"
+# build.rs embeds assets/icon.ico into Windows builds; nothing else outside
+# src/ is needed to build the published crate.
+include = ["src/**", "build.rs", "assets/icon.ico", "LICENSE", "README.md"]
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
