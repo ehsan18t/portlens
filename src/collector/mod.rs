@@ -79,12 +79,31 @@ impl Default for CollectOptions {
     }
 }
 
+/// The result of one collection pass.
+#[derive(Debug)]
+pub struct Collection {
+    /// Deduplicated socket entries, sorted by port, address, and protocol.
+    pub entries: Vec<PortEntry>,
+    /// Why Docker/Podman detection found no containers, when it ran and
+    /// failed. `None` when it succeeded or was skipped (`--no-enrich`).
+    pub container_error: Option<docker::Error>,
+}
+
 /// Collect all open TCP and UDP sockets using the provided enrichment options.
+///
+/// Shorthand for [`collect`] for callers that do not report container
+/// detection failures.
+pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> {
+    collect(options).map(|collection| collection.entries)
+}
+
+/// Collect all open TCP and UDP sockets, and keep why container detection
+/// failed.
 ///
 /// When `deep_enrichment` is disabled, the collector skips Docker/Podman
 /// probing, project-root walking, config-file scanning, and command-line path
 /// fallback. Core socket, PID, user, uptime, and process-name detection remain.
-pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> {
+pub fn collect(options: &CollectOptions) -> Result<Collection> {
     // Resolve the home directory once so Docker/Podman probing and
     // project-root detection share the same ceiling.
     let home = if options.deep_enrichment {
@@ -125,8 +144,8 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
     let mut user_resolver = UserResolver::default();
 
     // Block on Docker results only after all other I/O is done.
-    let container_map =
-        docker_handle.map_or_else(ContainerPortMap::default, docker::DetectionHandle::wait);
+    let (container_map, container_error) =
+        docker_handle.map_or_else(|| (ContainerPortMap::default(), None), wait_for_containers);
     let tcp_states = tcp_state::load_tcp_state_index();
     let now_epoch = current_epoch_secs();
 
@@ -157,7 +176,65 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     let entries = deduplicate_and_sort_entries(all_entries);
     debug!("finished socket collection: entries={}", entries.len());
-    Ok(entries)
+    Ok(Collection {
+        entries,
+        container_error,
+    })
+}
+
+/// Wait for background container detection, logging why it failed.
+fn wait_for_containers(
+    handle: docker::DetectionHandle,
+) -> (ContainerPortMap, Option<docker::Error>) {
+    match handle.wait_result() {
+        Ok(container_map) => (container_map, None),
+        Err(error) => {
+            log_detection_error(&error);
+            (ContainerPortMap::default(), Some(error))
+        }
+    }
+}
+
+/// Log a container detection failure, with its underlying cause, under
+/// `--trace`.
+pub fn log_detection_error(error: &docker::Error) {
+    match std::error::Error::source(error) {
+        Some(source) => debug!("container detection failed: {error}: {source}"),
+        None => debug!("container detection failed: {error}"),
+    }
+}
+
+/// A one-line hint for a container detection failure the user can fix.
+///
+/// Only a permission problem gets a hint: the runtime is there but this user
+/// may not talk to it, which silently drops every container name from the
+/// listing. No runtime at all is normal, and the remaining failures have no
+/// clear remedy, so they are only logged under `--trace`. The endpoint comes
+/// from the environment (`DOCKER_HOST`) and is sanitized for the terminal.
+#[must_use]
+pub fn container_detection_hint(error: &docker::Error) -> Option<String> {
+    let docker::Error::PermissionDenied { endpoint } = error else {
+        return None;
+    };
+    Some(format!(
+        "container detection skipped: permission denied on {} ({})",
+        crate::display::sanitize_for_terminal(endpoint),
+        permission_remedy(endpoint)
+    ))
+}
+
+#[cfg(windows)]
+const fn permission_remedy(_endpoint: &str) -> &'static str {
+    "add your user to the docker-users group or run in an elevated terminal"
+}
+
+#[cfg(not(windows))]
+fn permission_remedy(endpoint: &str) -> &'static str {
+    if endpoint.contains("podman") {
+        "run with sudo, or use your user's rootless Podman socket"
+    } else {
+        "add your user to the docker group or run with sudo"
+    }
 }
 
 fn collect_raw_listeners() -> Result<Vec<listeners::Listener>> {
@@ -250,4 +327,42 @@ const fn visibility_warning_message() -> &'static str {
 #[cfg(not(any(target_os = "linux", windows)))]
 const fn visibility_warning_message() -> &'static str {
     ""
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_denied_gets_a_sanitized_one_line_hint() {
+        let error = docker::Error::PermissionDenied {
+            endpoint: "/var/run/docker.sock\x1b]0;pwned\x07\nnext".to_string(),
+        };
+        let hint = container_detection_hint(&error).expect("permission denied should get a hint");
+        assert!(
+            hint.starts_with(
+                "container detection skipped: permission denied on /var/run/docker.sock"
+            ),
+            "hint should name the endpoint: {hint}"
+        );
+        assert!(
+            !hint.contains(['\x1b', '\x07', '\n']),
+            "the endpoint must be sanitized for the terminal: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn other_detection_failures_get_no_hint() {
+        for error in [
+            docker::Error::DaemonNotFound,
+            docker::Error::Timeout,
+            docker::Error::HttpStatus(500),
+            docker::Error::Io(std::io::Error::other("boom")),
+        ] {
+            assert!(
+                container_detection_hint(&error).is_none(),
+                "{error:?} should only be logged under --trace"
+            );
+        }
+    }
 }

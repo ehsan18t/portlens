@@ -540,7 +540,10 @@ fn run(cli: Cli) -> Result<u8> {
         };
     }
 
-    let entries = collector::collect_with_options(&collector::CollectOptions {
+    let collector::Collection {
+        entries,
+        container_error,
+    } = collector::collect(&collector::CollectOptions {
         deep_enrichment: !cli.no_enrich,
     })?;
     debug!("collected {} raw entries before filtering", entries.len());
@@ -583,11 +586,8 @@ fn run(cli: Cli) -> Result<u8> {
         }
     }
 
-    if std::io::stderr().is_terminal()
-        && let Some(warning) = collector::visibility_warning()
-    {
-        writeln!(std::io::stderr().lock(), "warning: {warning}")
-            .context("failed to write visibility warning to stderr")?;
+    if std::io::stderr().is_terminal() {
+        print_listing_warnings(container_error.as_ref())?;
     }
 
     if !cli.json
@@ -601,6 +601,21 @@ fn run(cli: Cli) -> Result<u8> {
 
     debug!("run completed successfully");
     Ok(0)
+}
+
+/// Print the stderr warnings that follow a listing: why container detection
+/// failed (only when the user can fix it) and missing privileges.
+fn print_listing_warnings(container_error: Option<&portlens::docker::Error>) -> Result<()> {
+    let mut stderr = std::io::stderr().lock();
+    if let Some(hint) = container_error.and_then(collector::container_detection_hint) {
+        writeln!(stderr, "warning: {hint}")
+            .context("failed to write container detection warning to stderr")?;
+    }
+    if let Some(warning) = collector::visibility_warning() {
+        writeln!(stderr, "warning: {warning}")
+            .context("failed to write visibility warning to stderr")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

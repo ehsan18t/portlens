@@ -82,7 +82,10 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     pids.dedup();
     let identities = snapshot_identities(&pids);
 
-    let container_map = docker_handle.wait();
+    let container_map = docker_handle.wait_result().unwrap_or_else(|error| {
+        collector::log_detection_error(&error);
+        ContainerPortMap::default()
+    });
 
     let mut targets = resolve_targets_from_entries(
         entries,
