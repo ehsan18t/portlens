@@ -36,6 +36,7 @@ struct Cli {
     no_header: bool,
     json: bool,
     no_enrich: bool,
+    no_tips: bool,
     trace: bool,
     command: Option<Command>,
 }
@@ -357,6 +358,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
     let no_header = pargs.contains("--no-header");
     let json = pargs.contains("--json");
     let no_enrich = pargs.contains("--no-enrich");
+    let no_tips = pargs.contains("--no-tips");
     let trace = pargs.contains("--trace");
 
     validate_main_flag_conflicts(tcp, udp, listen, process.as_deref(), grep.as_deref())?;
@@ -388,6 +390,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
         no_header,
         json,
         no_enrich,
+        no_tips,
         trace,
         command,
     })
@@ -458,6 +461,7 @@ Options:
       --no-header      Suppress the column header row
       --json           Output results as a JSON array
       --no-enrich      Disable Docker/Podman and project-root enrichment
+      --no-tips        Hide the tips panel (or set PORTLENS_NO_TIPS=1)
       --trace          Emit diagnostic trace to stderr for debugging
   -h, --help           Print help
   -v, --version        Print version
@@ -491,13 +495,21 @@ fn write_version(out: &mut impl Write) -> io::Result<()> {
     out.flush()
 }
 
+/// Environment variable that hides the tips panel when set to any non-empty value.
+const NO_TIPS_ENV: &str = "PORTLENS_NO_TIPS";
+
+/// Whether the `PORTLENS_NO_TIPS` value (if any) opts out of the tips panel.
+fn tips_disabled_by_env(value: Option<OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 /// Application entry point, separated from `main()` for testability.
 ///
 /// Returns the process exit code as a `u8` so subcommands (notably `kill`)
 /// can surface partial-success states (e.g. exit 3 for "nothing to kill").
 fn run(cli: Cli) -> Result<u8> {
     debug!(
-        "cli parsed: tcp={} udp={} listen={} port={:?} process={:?} grep={:?} all={} full={} compact={} no_header={} json={} no_enrich={} trace={} command={:?}",
+        "cli parsed: tcp={} udp={} listen={} port={:?} process={:?} grep={:?} all={} full={} compact={} no_header={} json={} no_enrich={} no_tips={} trace={} command={:?}",
         cli.tcp,
         cli.udp,
         cli.listen,
@@ -510,6 +522,7 @@ fn run(cli: Cli) -> Result<u8> {
         cli.no_header,
         cli.json,
         cli.no_enrich,
+        cli.no_tips,
         cli.trace,
         cli.command.as_ref().map(Command::name)
     );
@@ -593,7 +606,11 @@ fn run(cli: Cli) -> Result<u8> {
             .context("failed to write visibility warning to stderr")?;
     }
 
-    if !cli.json && std::io::stdout().is_terminal() {
+    if !cli.json
+        && !cli.no_tips
+        && !tips_disabled_by_env(std::env::var_os(NO_TIPS_ENV))
+        && std::io::stdout().is_terminal()
+    {
         trace!("printing interactive tips footer");
         display::print_tips()?;
     }
@@ -986,6 +1003,27 @@ mod tests {
             .expect("mixed-case grep should parse");
         assert_eq!(cli.grep.as_deref(), Some("VSCode"));
         assert!(cli.command.is_none(), "no subcommand expected");
+    }
+
+    #[test]
+    fn parse_cli_accepts_no_tips_flag() {
+        let cli = parse_cli(args(&["--no-tips", "-a"])).expect("--no-tips should parse");
+        assert!(cli.no_tips, "--no-tips should be recorded");
+        assert!(!parse_cli(args(&[])).expect("no args").no_tips);
+    }
+
+    #[test]
+    fn tips_env_opt_out_requires_a_non_empty_value() {
+        assert!(!tips_disabled_by_env(None), "unset keeps tips");
+        assert!(
+            !tips_disabled_by_env(Some(OsString::new())),
+            "an empty value keeps tips"
+        );
+        assert!(tips_disabled_by_env(Some(OsString::from("1"))));
+        assert!(
+            tips_disabled_by_env(Some(OsString::from("0"))),
+            "any non-empty value opts out"
+        );
     }
 
     #[test]

@@ -182,6 +182,7 @@ cargo install portlens
 | `--no-header`      |       | Suppress the column header row                                                             |
 | `--json`           |       | Output results as a JSON array                                                             |
 | `--no-enrich`      |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
+| `--no-tips`        |       | Hide the tips panel shown after the table (same as setting `PORTLENS_NO_TIPS`)             |
 | `--version`        | `-v`  | Print the version string and exit                                                          |
 | `--help`           | `-h`  | Print usage information and exit                                                           |
 
