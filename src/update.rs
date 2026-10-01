@@ -377,16 +377,16 @@ fn base_curl_command(timeout_seconds: &str) -> ProcessCommand {
 ///
 /// On Windows a bare `curl` is resolved by searching the application
 /// directory first, so a `curl.exe` planted next to `portlens.exe` would be
-/// picked up. Prefer the copy that ships in `%SystemRoot%\System32` and fall
-/// back to a `PATH` lookup only when it is absent.
+/// picked up. Prefer the copy that ships in the system directory (asked from
+/// the OS, not read from `%SystemRoot%`) and fall back to a `PATH` lookup
+/// only when it is absent.
 fn curl_program() -> PathBuf {
     system_curl_path().unwrap_or_else(|| PathBuf::from("curl"))
 }
 
 #[cfg(windows)]
 fn system_curl_path() -> Option<PathBuf> {
-    let root = std::env::var_os("SystemRoot")?;
-    let candidate = PathBuf::from(root).join("System32").join("curl.exe");
+    let candidate = PathBuf::from(crate::kill::system32_dir()?).join("curl.exe");
     candidate.is_file().then_some(candidate)
 }
 

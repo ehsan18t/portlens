@@ -285,7 +285,7 @@ fn is_path_under_dir(exe: &str, dir: &str) -> bool {
 /// the OS rather than read from `%SystemRoot%`, which the caller controls.
 /// `None` if the call fails.
 #[cfg(windows)]
-fn system32_dir() -> Option<String> {
+pub(crate) fn system32_dir() -> Option<String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
