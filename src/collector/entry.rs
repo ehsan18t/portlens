@@ -65,14 +65,12 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
             || {
                 let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
                 let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
-                let root = context
-                    .stack_detector
-                    .detect_project_root(what_stack::ProjectInput {
-                        cwd,
-                        exe: exe_path,
-                        cmd,
-                        home: context.home,
-                    });
+                let root = context.stack_detector.detect_project_root(
+                    what_stack::ProjectInput::new()
+                        .cwd(cwd)
+                        .exe(exe_path)
+                        .cmd(cmd),
+                );
                 let name = root.as_ref().and_then(|root| {
                     what_stack::project_name(root).map(std::borrow::Cow::into_owned)
                 });
@@ -150,18 +148,20 @@ fn detect_enriched_app(
     exe_path: Option<&Path>,
     stack_detector: &mut what_stack::StackDetector,
 ) -> Option<AppLabel> {
-    stack_detector.detect_stack(what_stack::StackInput {
-        image: container.map(|info| info.image.as_str()),
-        project_root,
-        process_name,
-        exe_name,
-        exe_path,
-    })
+    stack_detector
+        .detect_stack(
+            what_stack::StackInput::new(process_name)
+                .image(container.map(|info| info.image.as_str()))
+                .project_root(project_root)
+                .exe_name(exe_name)
+                .exe_path(exe_path),
+        )
+        .map(what_stack::StackLabel::into_cow)
 }
 
 fn detect_process_app(process_name: &str, exe_name: Option<&str>) -> Option<AppLabel> {
-    what_stack::detect_from_process(process_name)
-        .or_else(|| exe_name.and_then(what_stack::detect_from_process))
+    what_stack::detect_from_process_names(process_name, exe_name)
+        .map(what_stack::StackLabel::into_cow)
 }
 
 fn resolve_state(
@@ -316,7 +316,7 @@ mod tests {
     fn detect_enriched_app_uses_config_for_known_runtime_processes() {
         let project = TempDir::new().unwrap();
         fs::write(project.path().join("next.config.js"), "").unwrap();
-        let mut detector = what_stack::StackDetector::new(None);
+        let mut detector = what_stack::StackDetector::with_home(None);
 
         let app = detect_enriched_app(
             None,
@@ -342,7 +342,7 @@ mod tests {
         fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
         fs::write(project.path().join("Cargo.toml"), "").unwrap();
         fs::write(&exe_path, "").unwrap();
-        let mut detector = what_stack::StackDetector::new(None);
+        let mut detector = what_stack::StackDetector::with_home(None);
 
         let app = detect_enriched_app(
             None,
@@ -364,7 +364,7 @@ mod tests {
 
         fs::write(project.path().join("Cargo.toml"), "").unwrap();
         fs::write(&exe_path, "").unwrap();
-        let mut detector = what_stack::StackDetector::new(None);
+        let mut detector = what_stack::StackDetector::with_home(None);
 
         let app = detect_enriched_app(
             None,

@@ -9,9 +9,10 @@ use serde::Serialize;
 
 /// Human-readable app or framework label for an entry.
 ///
-/// Most detections use borrowed string literals, but `Cow` leaves room for
-/// future runtime-generated labels without changing the data model.
-pub type AppLabel = what_stack::StackLabel;
+/// Detected [`what_stack::StackLabel`] values are converted with
+/// [`what_stack::StackLabel::into_cow`], which keeps built-in labels borrowed
+/// while still allowing runtime-generated text.
+pub type AppLabel = std::borrow::Cow<'static, str>;
 
 /// Re-exported from [`nanodock`] - network transport protocol (TCP/UDP).
 pub use nanodock::Protocol;
