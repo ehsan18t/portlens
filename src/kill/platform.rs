@@ -43,6 +43,48 @@ pub enum KillOutcome {
     Failed,
 }
 
+/// Where a process comes from, used to tell a genuine operating system
+/// process from a same-named impostor (a developer's `services.exe` build or
+/// a Unix binary called `init`). Every field is `None` when it is unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessOrigin {
+    /// Full path of the executable image. Usually unreadable for protected
+    /// processes when portlens is not elevated.
+    #[cfg(windows)]
+    pub exe: Option<std::path::PathBuf>,
+    /// Whether the real user id is `0`.
+    #[cfg(unix)]
+    pub root_owned: Option<bool>,
+    /// Parent PID. `sysinfo` reports a parent of `0` as `None` on Linux.
+    #[cfg(unix)]
+    pub parent_pid: Option<u32>,
+}
+
+impl ProcessOrigin {
+    fn of(process: &Process) -> Self {
+        #[cfg(windows)]
+        {
+            Self {
+                exe: process.exe().map(std::path::Path::to_path_buf),
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            Self {
+                root_owned: process.user_id().map(|uid| **uid == 0),
+                parent_pid: process.parent().map(Pid::as_u32),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = process;
+            Self::default()
+        }
+    }
+}
+
 /// Identity of a process captured at resolve time, used to detect PID reuse
 /// before signaling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +94,9 @@ pub struct ProcessIdentity {
     /// Process start time in seconds since the Unix epoch, as reported by
     /// `sysinfo` (`0` when the OS did not let us read it).
     pub start_time: u64,
+    /// Executable path or ownership, used only for the critical-process
+    /// check. Not part of identity matching.
+    pub origin: ProcessOrigin,
 }
 
 impl ProcessIdentity {
@@ -59,7 +104,27 @@ impl ProcessIdentity {
         Self {
             name: process.name().to_string_lossy().into_owned(),
             start_time: process.start_time(),
+            origin: ProcessOrigin::of(process),
         }
+    }
+}
+
+/// What a resolve-time snapshot must load beyond name and start time: the
+/// executable path on Windows, the owning user on Unix.
+fn snapshot_refresh_kind() -> ProcessRefreshKind {
+    #[cfg(windows)]
+    {
+        ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+    }
+
+    #[cfg(unix)]
+    {
+        ProcessRefreshKind::nothing().with_user(sysinfo::UpdateKind::OnlyIfNotSet)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        ProcessRefreshKind::nothing()
     }
 }
 
@@ -80,7 +145,7 @@ pub fn snapshot_identities(pids: &[u32]) -> HashMap<u32, ProcessIdentity> {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(&sys_pids),
         false,
-        ProcessRefreshKind::nothing(),
+        snapshot_refresh_kind(),
     );
 
     pids.iter()
@@ -370,6 +435,7 @@ mod tests {
         ProcessIdentity {
             name: name.to_owned(),
             start_time,
+            origin: ProcessOrigin::default(),
         }
     }
 
@@ -530,5 +596,45 @@ mod tests {
             "a different process name under the pid must not be signaled"
         );
         assert!(child.is_running(), "the child must not have been signaled");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_captures_executable_path() {
+        let child = SacrificialChild::spawn();
+        let pid = child.pid();
+        let identity = snapshot_identities(&[pid])
+            .remove(&pid)
+            .expect("the child process should be visible to sysinfo");
+        let exe = identity
+            .origin
+            .exe
+            .expect("an unprivileged child's executable path should be readable");
+        assert!(
+            exe.to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with("ping.exe"),
+            "unexpected exe path: {}",
+            exe.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_captures_owner_and_parent() {
+        let child = SacrificialChild::spawn();
+        let pid = child.pid();
+        let identity = snapshot_identities(&[pid])
+            .remove(&pid)
+            .expect("the child process should be visible to sysinfo");
+        assert_eq!(
+            identity.origin.parent_pid,
+            Some(std::process::id()),
+            "the child's parent should be the test process"
+        );
+        assert!(
+            identity.origin.root_owned.is_some(),
+            "the child's owner should be readable"
+        );
     }
 }

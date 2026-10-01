@@ -211,11 +211,14 @@ portlens kill --pid 12345 --json
 | `--dry-run`     |       | List resolved targets without signaling anything                                        |
 | `--json`        |       | Emit the kill report or dry-run target list as JSON                                     |
 
-Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
+Safety:
 
-When stdin is not a terminal (scripts, pipes, editor tasks), `kill` refuses to run without `--yes` or `--dry-run` instead of skipping the prompt. The check happens before any targets are resolved, so it exits 2 even when nothing would match.
-
-Each target's process name and start time are captured when it is resolved and checked again right before it is signaled. If the PID now belongs to a different process, it is left alone and reported as `process-changed`. On Windows the check and the termination use the same process handle.
+- PortLens never kills protected processes: PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, its own PID, and critical operating system processes (`csrss`, `wininit`, `winlogon`, `lsass`, `services`, `smss` on Windows; `init`, `systemd`, `launchd` on Unix). `--force` does not override this.
+- A critical name alone is not enough to protect a process. On Windows its executable must live under `%SystemRoot%\System32`; on Unix it must be owned by root or have parent PID 0 or 1. When that cannot be read (for example, protected Windows processes when PortLens is not elevated), the process is treated as protected. A developer's own `services.exe` or `init` binary therefore stays killable.
+- With `--pid`, a protected target is refused outright and the command fails. With `--port`, protected processes are skipped and every other target is still processed: each skipped process is reported as `skipped pid N (name): <reason>` (JSON status `protected`), in the confirmation prompt, the `--dry-run` output, and the final report. This keeps ranges such as the Windows dynamic RPC ports (49664 and up, partly owned by `lsass`, `wininit`, and `services`) usable. Skipped processes do not make the run fail; if every matching process is protected, nothing is signaled and `kill` exits 1, also with `--dry-run`.
+- When stdin is not a terminal (scripts, pipes, editor tasks), `kill` refuses to run without `--yes` or `--dry-run` instead of skipping the prompt. The check happens before any targets are resolved, so it exits 2 even when nothing would match.
+- Each target's process name and start time are captured when it is resolved and checked again right before it is signaled. If the PID now belongs to a different process, it is left alone and reported as `process-changed`. On Windows the check and the termination use the same process handle.
+- Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
 
 **Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable or does not confirm the stop, the failure is reported explicitly. Use `--pid` if you genuinely need to signal the proxy process directly.
 
@@ -307,12 +310,12 @@ For environment-specific debugging, run with `--trace` to emit diagnostic output
 
 ## Exit Codes
 
-| Code | Meaning                                                                                                                                             |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success                                                                                                                                             |
-| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed, including a reused PID), or the `kill` confirmation prompt was declined |
-| 2    | Usage error (invalid flag combination, missing required argument, or `kill` without `--yes` when stdin is not a terminal)                           |
-| 3    | `kill` selector matched no live process                                                                                                             |
+| Code | Meaning                                                                                                                                                                    |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success (including a `kill --dry-run`, and a `kill --port` run that skipped some protected processes)                                                                      |
+| 1    | Runtime error, or for `kill`: a target failed, a PID was reused, a `--pid` target is protected, every `--port` match is protected, or the confirmation prompt was declined |
+| 2    | Usage error (invalid flag combination, missing required argument, or `kill` without `--yes` when stdin is not a terminal)                                                  |
+| 3    | `kill` selector matched no live process                                                                                                                                    |
 
 ---
 

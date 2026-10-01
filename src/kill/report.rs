@@ -34,6 +34,10 @@ pub enum KillStatus {
     #[cfg(unix)]
     #[serde(rename = "failed")]
     Failed,
+    /// A protected process matched a `--port` selector and was skipped
+    /// without being signaled. Not a failure on its own.
+    #[serde(rename = "protected")]
+    Protected,
     /// Dry-run: process would be killed (graceful).
     #[serde(rename = "would-kill")]
     WouldKill,
@@ -126,6 +130,21 @@ impl KillReportEntry {
             process,
             status,
             hint: None,
+            container_id: None,
+            container_name: None,
+            port: None,
+        }
+    }
+
+    /// Build a report row for a protected process that was skipped; the
+    /// reason is carried in `hint`.
+    #[must_use]
+    pub const fn from_protected(pid: u32, process: String, reason: String) -> Self {
+        Self {
+            pid,
+            process,
+            status: KillStatus::Protected,
+            hint: Some(reason),
             container_id: None,
             container_name: None,
             port: None,
@@ -237,7 +256,8 @@ pub fn print_human(entries: &[KillReportEntry]) -> Result<()> {
     Ok(())
 }
 
-fn format_process_line(e: &KillReportEntry) -> String {
+/// Format one process row as a human-readable line (not yet sanitized).
+pub fn format_process_line(e: &KillReportEntry) -> String {
     match e.status {
         KillStatus::Killed => format!("killed pid {} ({})", e.pid, e.process),
         KillStatus::AlreadyExited => format!("pid {} already exited ({})", e.pid, e.process),
@@ -252,6 +272,12 @@ fn format_process_line(e: &KillReportEntry) -> String {
             e.pid,
             e.process,
             e.hint.as_deref().unwrap_or("")
+        ),
+        KillStatus::Protected => format!(
+            "skipped pid {} ({}): {}",
+            e.pid,
+            e.process,
+            e.hint.as_deref().unwrap_or("protected process")
         ),
         _ => format!("pid {} ({}): {:?}", e.pid, e.process, e.status),
     }
@@ -378,6 +404,29 @@ mod tests {
         assert!(
             format_process_line(&entry).starts_with("not killing pid 1234 (node)"),
             "human output should say the pid was not killed"
+        );
+    }
+
+    #[test]
+    fn protected_entry_is_skipped_not_failed() {
+        let entry = KillReportEntry::from_protected(
+            812,
+            "lsass.exe".to_string(),
+            "critical operating system process 'lsass.exe'".to_string(),
+        );
+        assert_eq!(entry.status, KillStatus::Protected);
+        assert!(
+            !entry.is_failure(),
+            "skipping a protected process is not a kill failure"
+        );
+        assert_eq!(
+            serde_json::to_value(entry.status).expect("status should serialize"),
+            serde_json::json!("protected"),
+            "JSON status token should be stable"
+        );
+        assert_eq!(
+            format_process_line(&entry),
+            "skipped pid 812 (lsass.exe): critical operating system process 'lsass.exe'"
         );
     }
 

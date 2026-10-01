@@ -17,7 +17,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use anyhow::{Result, bail};
 use log::debug;
 
-use self::platform::{kill_pid, pid_exists};
+use self::platform::{ProcessOrigin, kill_pid, pid_exists};
 use self::report::KillReportEntry;
 use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
 use crate::display::sanitize_for_terminal;
@@ -54,6 +54,9 @@ const EXIT_ABORTED: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 /// Exit code when the selector matched nothing.
 const EXIT_NOTHING_TO_KILL: u8 = 3;
+/// Exit code when a `--port` selector matched only protected processes, so
+/// nothing would be (or was) signaled. Not `3`: something did match.
+const EXIT_ALL_PROTECTED: u8 = 1;
 
 /// How the confirmation step should behave for one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,16 +97,18 @@ fn confirmation_exit(mode: ConfirmMode, ask: impl FnOnce() -> Result<bool>) -> R
 /// Run a kill operation end-to-end.
 ///
 /// Returns `Ok(exit_code)` where:
-/// - `0`: every resolved target succeeded (or was already gone), or a dry run
-///   with at least one target.
+/// - `0`: every non-protected target succeeded (or was already gone), or a
+///   dry run with at least one target. Protected processes skipped by a
+///   `--port` selector do not count as failures.
 /// - `1`: at least one target failed (permission denied, pid reused, other
-///   errors), or the user declined the confirmation prompt.
+///   errors), every match of a `--port` selector was protected (also in a
+///   dry run), or the user declined the confirmation prompt.
 /// - `2`: confirmation is required but stdin is not a terminal; pass `--yes`.
 ///   Checked before targets are resolved.
 /// - `3`: nothing to kill (no PID matched the selector).
 ///
 /// Errors propagate only for unexpected conditions such as socket enumeration
-/// failure or stdout/stderr write failure.
+/// failure, a protected `--pid` target, or stdout/stderr write failure.
 pub fn run(opts: &KillOptions) -> Result<u8> {
     debug!(
         "kill run: target={:?} force={} yes={} dry_run={} json={}",
@@ -136,21 +141,33 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
         return Ok(EXIT_NOTHING_TO_KILL);
     }
 
-    reject_protected_pids(&targets)?;
+    let pid_mode = matches!(opts.target, KillTarget::Pid(_));
+    let (targets, skipped) = partition_protected(targets, pid_mode, std::process::id())?;
 
-    debug!("resolved {} kill target(s)", targets.len());
+    debug!(
+        "resolved {} kill target(s), skipping {} protected",
+        targets.len(),
+        skipped.len()
+    );
 
-    if let Some(code) = confirmation_exit(mode, || confirm(&targets, opts))? {
+    if targets.is_empty() {
+        // Only reachable in `--port` mode: `--pid` refuses a protected target.
+        eprintln!("nothing to kill: every matching process is protected");
+        print_report(&skipped, opts.json)?;
+        return Ok(EXIT_ALL_PROTECTED);
+    }
+
+    if let Some(code) = confirmation_exit(mode, || confirm(&targets, &skipped, opts))? {
         eprintln!("aborted");
         return Ok(code);
     }
 
     if opts.dry_run {
-        announce_dry_run(&targets, opts)?;
+        announce_dry_run(&targets, &skipped, opts)?;
         return Ok(0);
     }
 
-    let mut report = Vec::with_capacity(targets.len());
+    let mut report = Vec::with_capacity(targets.len() + skipped.len());
     let mut any_failure = false;
     for t in targets {
         let entry = execute_target(t, opts.force);
@@ -159,14 +176,18 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
         }
         report.push(entry);
     }
+    report.extend(skipped);
 
-    if opts.json {
-        report::print_json(&report)?;
-    } else {
-        report::print_human(&report)?;
-    }
-
+    print_report(&report, opts.json)?;
     Ok(u8::from(any_failure))
+}
+
+fn print_report(report: &[KillReportEntry], json: bool) -> Result<()> {
+    if json {
+        report::print_json(report)
+    } else {
+        report::print_human(report)
+    }
 }
 
 /// Execute a single resolved target (process kill or container stop).
@@ -202,7 +223,9 @@ fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
 }
 
 fn resolve_pid_target(pid: u32) -> Option<ResolvedTarget> {
-    if preserve_pid_target(pid) || pid_exists(pid) {
+    // Protected PIDs are kept even when they are not enumerable (pid 0 on
+    // Windows, for example) so the user gets a refusal instead of "no process".
+    if protected_reason(pid, std::process::id(), &[], None).is_some() || pid_exists(pid) {
         let target = target_for_pid(pid).unwrap_or_else(|| Target {
             pid,
             process: "-".to_owned(),
@@ -214,54 +237,229 @@ fn resolve_pid_target(pid: u32) -> Option<ResolvedTarget> {
     None
 }
 
-fn preserve_pid_target(pid: u32) -> bool {
-    if pid == 0 || pid == std::process::id() {
-        return true;
+/// Critical OS processes that a port-killing tool must never terminate,
+/// compared case-insensitively with any trailing `.exe` removed. Killing
+/// `csrss` or `wininit` bugchecks Windows; the others break logon,
+/// authentication, or the service control manager.
+#[cfg(windows)]
+const CRITICAL_PROCESS_NAMES: &[&str] =
+    &["csrss", "wininit", "winlogon", "lsass", "services", "smss"];
+
+/// Critical OS processes that a port-killing tool must never terminate,
+/// compared case-insensitively. Covers init systems running outside PID 1
+/// (for example a `systemd --user` session manager holding activated sockets).
+#[cfg(unix)]
+const CRITICAL_PROCESS_NAMES: &[&str] = &["init", "systemd", "launchd"];
+
+/// No critical-process denylist is defined for other targets.
+#[cfg(not(any(unix, windows)))]
+const CRITICAL_PROCESS_NAMES: &[&str] = &[];
+
+/// Return `true` when `name` is on the critical OS process denylist.
+fn is_critical_process_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    CRITICAL_PROCESS_NAMES.contains(&stem)
+}
+
+/// Return `true` when `exe` lies under `dir`, compared case-insensitively
+/// with `/` treated as `\` and a `\\?\` prefix ignored. Paths containing a
+/// `..` segment never match.
+#[cfg(windows)]
+fn is_path_under_dir(exe: &str, dir: &str) -> bool {
+    fn normalize(path: &str) -> String {
+        let path = path.replace('/', "\\").to_ascii_lowercase();
+        path.strip_prefix(r"\\?\")
+            .map_or_else(|| path.clone(), str::to_owned)
     }
 
+    let exe = normalize(exe);
+    let mut dir = normalize(dir);
+    if !dir.ends_with('\\') {
+        dir.push('\\');
+    }
+    exe.starts_with(&dir) && !exe.split('\\').any(|segment| segment == "..")
+}
+
+/// The real system directory (normally `C:\Windows\System32`), asked from
+/// the OS rather than read from `%SystemRoot%`, which the caller controls.
+/// `None` if the call fails.
+#[cfg(windows)]
+fn system32_dir() -> Option<String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+
+    let mut buffer = [0u16; 512];
+    let capacity = u32::try_from(buffer.len()).ok()?;
+    // Safety: the buffer is valid for `capacity` UTF-16 units, and the call
+    // writes at most that many (returning the required size if larger).
+    let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), capacity) };
+    let len = usize::try_from(len).ok()?;
+    if len == 0 || len >= buffer.len() {
+        return None;
+    }
+    String::from_utf16(&buffer[..len]).ok()
+}
+
+/// Return `true` when `exe` is a plain drive-letter path (`X:\...`, with an
+/// optional `\\?\` prefix) and contains no 8.3 short-name segment. Only such
+/// paths can be compared reliably against the system directory.
+#[cfg(windows)]
+fn is_plain_drive_path(exe: &str) -> bool {
+    let path = exe.replace('/', "\\");
+    let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
+    let bytes = path.as_bytes();
+    bytes.len() > 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'\\'
+        && !path.contains('~')
+}
+
+/// Return `true` unless `origin` proves the process is not the operating
+/// system's own. This fails closed: the process counts as non-system only
+/// when its executable is a plain drive-letter path that lies outside the
+/// system directory reported by the OS. An unknown or empty path (typical
+/// for protected processes when portlens is not elevated), device or NT
+/// namespace paths, 8.3 short names, and a failed system directory lookup
+/// are all treated as a system process.
+#[cfg(windows)]
+fn is_system_origin(origin: &ProcessOrigin) -> bool {
+    is_system_exe(origin.exe.as_deref(), system32_dir().as_deref())
+}
+
+#[cfg(windows)]
+fn is_system_exe(exe: Option<&std::path::Path>, system32: Option<&str>) -> bool {
+    let (Some(exe), Some(system32)) = (exe, system32) else {
+        return true;
+    };
+    let exe = exe.to_string_lossy();
+    if !is_plain_drive_path(&exe) || exe.split(['\\', '/']).any(|segment| segment == "..") {
+        return true;
+    }
+    is_path_under_dir(&exe, system32)
+}
+
+/// Return `true` unless `origin` proves the process is not the operating
+/// system's own: it must be owned by a non-root user and have a parent other
+/// than PID 0 or 1. Missing information is treated as a system process.
+#[cfg(unix)]
+const fn is_system_origin(origin: &ProcessOrigin) -> bool {
+    let non_root = matches!(origin.root_owned, Some(false));
+    let ordinary_parent = matches!(origin.parent_pid, Some(ppid) if ppid > 1);
+    !(non_root && ordinary_parent)
+}
+
+/// No origin information exists for other targets; fail safe.
+#[cfg(not(any(unix, windows)))]
+const fn is_system_origin(_origin: &ProcessOrigin) -> bool {
+    true
+}
+
+/// Return the first of `names` that marks a critical OS process, or `None`.
+///
+/// A denylisted name alone is not enough: the process must also look like
+/// the operating system's own (see `is_system_origin`), so a developer's
+/// binary that happens to share the name stays killable. `origin` is `None`
+/// when nothing is known about the process, which fails safe.
+fn critical_process_name<'a>(names: &[&'a str], origin: Option<&ProcessOrigin>) -> Option<&'a str> {
+    let name = names
+        .iter()
+        .copied()
+        .find(|name| is_critical_process_name(name))?;
+    origin.is_none_or(is_system_origin).then_some(name)
+}
+
+/// Return why a process must never be signaled, or `None` when it is an
+/// acceptable target. `names` lists every known name for the process and
+/// `origin` its executable path or ownership, when known.
+///
+/// This is the single source of truth for protected targets. It is not
+/// overridable by `--force`: none of these is a legitimate target for a
+/// port-killing tool.
+fn protected_reason(
+    pid: u32,
+    self_pid: u32,
+    names: &[&str],
+    origin: Option<&ProcessOrigin>,
+) -> Option<String> {
+    if pid == 0 {
+        return Some("kernel/system idle process".to_owned());
+    }
+    if pid == self_pid {
+        return Some("this portlens process".to_owned());
+    }
     #[cfg(unix)]
     if pid == 1 {
-        return true;
+        return Some("init process".to_owned());
     }
-
     #[cfg(windows)]
     if pid == 4 {
-        return true;
+        return Some("Windows System process".to_owned());
     }
-
-    false
+    critical_process_name(names, origin)
+        .map(|name| format!("critical operating system process '{name}'"))
 }
 
-fn reject_protected_pids(targets: &[ResolvedTarget]) -> Result<()> {
-    let self_pid = std::process::id();
+/// Return why the process target `p` is protected, or `None`.
+fn target_protected_reason(p: &Target, self_pid: u32) -> Option<String> {
+    let identity_name = p.identity.as_ref().map(|i| i.name.as_str());
+    let names: Vec<&str> = std::iter::once(p.process.as_str())
+        .chain(identity_name)
+        .collect();
+    let origin = p.identity.as_ref().map(|i| &i.origin);
+    protected_reason(p.pid, self_pid, &names, origin)
+}
+
+/// Split resolved targets into those to act on and skipped protected ones.
+///
+/// In `--pid` mode (`pid_mode`) a protected target is an error: the user
+/// named exactly that process. In `--port` mode protected processes are
+/// skipped with a `protected` report entry so that a range spanning OS-owned
+/// ports (for example the Windows dynamic RPC range, where `lsass`,
+/// `wininit`, and `services` listen) still frees every other port.
+fn partition_protected(
+    targets: Vec<ResolvedTarget>,
+    pid_mode: bool,
+    self_pid: u32,
+) -> Result<(Vec<ResolvedTarget>, Vec<KillReportEntry>)> {
+    let mut kept = Vec::with_capacity(targets.len());
+    let mut skipped = Vec::new();
     for t in targets {
-        let pid = match t {
-            ResolvedTarget::Process(p) => p.pid,
-            // Container targets are stopped via the daemon API. The proxy
-            // PID is informational; we never signal it directly.
-            ResolvedTarget::Container(_) => continue,
+        // Container targets are stopped via the daemon API. The proxy PID is
+        // informational; we never signal it directly.
+        let ResolvedTarget::Process(p) = t else {
+            kept.push(t);
+            continue;
         };
-        if pid == 0 {
-            bail!("refusing to kill pid 0 (kernel/system idle process)");
+        let Some(reason) = target_protected_reason(&p, self_pid) else {
+            kept.push(ResolvedTarget::Process(p));
+            continue;
+        };
+        if pid_mode {
+            bail!(
+                "refusing to kill pid {} ({}): {}",
+                p.pid,
+                sanitize_for_terminal(&p.process),
+                sanitize_for_terminal(&reason)
+            );
         }
-        if pid == self_pid {
-            bail!("refusing to kill self (pid {pid})");
-        }
-        #[cfg(unix)]
-        if pid == 1 {
-            bail!("refusing to kill pid 1 (init)");
-        }
-        #[cfg(windows)]
-        if pid == 4 {
-            bail!("refusing to kill pid 4 (Windows System process)");
-        }
+        debug!("skipping protected pid {}: {reason}", p.pid);
+        skipped.push(KillReportEntry::from_protected(p.pid, p.process, reason));
     }
-    Ok(())
+    Ok((kept, skipped))
 }
 
-fn announce_dry_run(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<()> {
+fn announce_dry_run(
+    targets: &[ResolvedTarget],
+    skipped: &[KillReportEntry],
+    opts: &KillOptions,
+) -> Result<()> {
     if opts.json {
-        let report = dry_run_report(targets, opts.force);
+        let mut report = dry_run_report(targets, opts.force);
+        report.extend_from_slice(skipped);
         return report::print_json(&report);
     }
 
@@ -279,6 +477,23 @@ fn announce_dry_run(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<()
 
     for t in targets {
         write_target_line(&mut out, t)?;
+    }
+    if !skipped.is_empty() {
+        writeln!(
+            out,
+            "dry-run: skipping {} protected process(es):",
+            skipped.len()
+        )?;
+        write_skipped_lines(&mut out, skipped)?;
+    }
+    Ok(())
+}
+
+/// Write one indented `skipped pid N (name): reason` line per entry.
+fn write_skipped_lines(writer: &mut impl Write, skipped: &[KillReportEntry]) -> Result<()> {
+    for entry in skipped {
+        let line = report::format_process_line(entry);
+        writeln!(writer, "  {}", sanitize_for_terminal(&line))?;
     }
     Ok(())
 }
@@ -312,7 +527,11 @@ fn dry_run_report(targets: &[ResolvedTarget], force: bool) -> Vec<KillReportEntr
         .collect()
 }
 
-fn confirm(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<bool> {
+fn confirm(
+    targets: &[ResolvedTarget],
+    skipped: &[KillReportEntry],
+    opts: &KillOptions,
+) -> Result<bool> {
     let mut err = std::io::stderr().lock();
     let (n_proc, n_ctr) = count_target_kinds(targets);
     let verb = confirmation_verb(opts.force);
@@ -327,6 +546,10 @@ fn confirm(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<bool> {
 
     for t in targets {
         write_target_line(&mut err, t)?;
+    }
+    if !skipped.is_empty() {
+        writeln!(err, "skipping {} protected process(es):", skipped.len())?;
+        write_skipped_lines(&mut err, skipped)?;
     }
     write!(err, "proceed? [y/N] ")?;
     err.flush()?;
@@ -530,6 +753,330 @@ mod tests {
         let skipped = confirmation_exit(ConfirmMode::Skip, || panic!("--yes must not prompt"))
             .expect("skipping should not be a runtime error");
         assert_eq!(skipped, None, "--yes should proceed without prompting");
+    }
+
+    #[test]
+    fn protected_reason_covers_reserved_pids() {
+        assert!(
+            protected_reason(0, 999, &[], None).is_some(),
+            "pid 0 is protected"
+        );
+        assert!(
+            protected_reason(999, 999, &[], None).is_some(),
+            "self is protected"
+        );
+        assert!(protected_reason(5000, 999, &["node"], None).is_none());
+        #[cfg(unix)]
+        assert!(
+            protected_reason(1, 999, &[], None).is_some(),
+            "init is protected"
+        );
+        #[cfg(windows)]
+        assert!(
+            protected_reason(4, 999, &[], None).is_some(),
+            "System is protected"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn critical_windows_process_names_are_denied_case_insensitively() {
+        for name in [
+            "csrss.exe",
+            "CSRSS.EXE",
+            "wininit.exe",
+            "WinLogon.exe",
+            "lsass.exe",
+            "services.exe",
+            "smss.exe",
+            "lsass",
+        ] {
+            assert!(is_critical_process_name(name), "{name} must be denied");
+        }
+        for name in [
+            "node.exe",
+            "svchost.exe",
+            "lsass2.exe",
+            "my-services.exe",
+            "-",
+        ] {
+            assert!(!is_critical_process_name(name), "{name} must be allowed");
+        }
+        let reason = protected_reason(5000, 999, &["node.exe", "LSASS.EXE"], None)
+            .expect("any matching name should protect the target");
+        assert!(reason.contains("critical operating system process"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn critical_unix_process_names_are_denied_case_insensitively() {
+        for name in ["systemd", "SystemD", "init", "launchd"] {
+            assert!(is_critical_process_name(name), "{name} must be denied");
+        }
+        for name in ["systemd-resolved", "node", "initdb", "-"] {
+            assert!(!is_critical_process_name(name), "{name} must be allowed");
+        }
+    }
+
+    /// A process target whose identity carries `name` and `origin`.
+    fn process_target(
+        pid: u32,
+        process: &str,
+        name: &str,
+        origin: ProcessOrigin,
+    ) -> ResolvedTarget {
+        ResolvedTarget::Process(Target {
+            pid,
+            process: process.to_string(),
+            identity: Some(platform::ProcessIdentity {
+                name: name.to_string(),
+                start_time: 1,
+                origin,
+            }),
+        })
+    }
+
+    /// Origin that proves nothing, so a denylisted name stays protected.
+    fn unknown_origin() -> ProcessOrigin {
+        ProcessOrigin::default()
+    }
+
+    /// Origin that proves the process is an ordinary user program.
+    fn user_program_origin() -> ProcessOrigin {
+        #[cfg(windows)]
+        {
+            ProcessOrigin {
+                exe: Some(std::path::PathBuf::from(
+                    r"C:\Users\dev\go\bin\services.exe",
+                )),
+            }
+        }
+        #[cfg(unix)]
+        {
+            ProcessOrigin {
+                root_owned: Some(false),
+                parent_pid: Some(4321),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            ProcessOrigin::default()
+        }
+    }
+
+    fn critical_name() -> &'static str {
+        CRITICAL_PROCESS_NAMES.first().copied().unwrap_or("init")
+    }
+
+    #[test]
+    fn partition_protected_skips_in_port_mode_and_keeps_the_rest() {
+        let container = ResolvedTarget::Container(ContainerTarget {
+            container_id: "abc".to_string(),
+            container_name: "pg".to_string(),
+            port: 5432,
+            proxy_pid: 0,
+            proxy_process: "docker-proxy".to_string(),
+        });
+        let targets = vec![
+            process_target(5000, "node", critical_name(), unknown_origin()),
+            process_target(5001, "node", "node", unknown_origin()),
+            container,
+        ];
+
+        let (kept, skipped) = partition_protected(targets, false, 999)
+            .expect("port mode must skip protected targets, not fail");
+
+        assert_eq!(
+            kept.len(),
+            2,
+            "the ordinary process and the container (proxy pid 0 is never signaled) stay"
+        );
+        assert_eq!(skipped.len(), 1, "the critical identity name is skipped");
+        assert_eq!(skipped[0].pid, 5000);
+        assert_eq!(skipped[0].status, KillStatus::Protected);
+        assert!(
+            skipped[0]
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("critical operating system process")),
+            "the skip reason should be reported"
+        );
+    }
+
+    #[test]
+    fn partition_protected_refuses_in_pid_mode_with_sanitized_name() {
+        let targets = vec![process_target(
+            5000,
+            "evil\x1b[2Jname",
+            critical_name(),
+            unknown_origin(),
+        )];
+        let error = partition_protected(targets, true, 999)
+            .expect_err("pid mode must refuse a protected target outright");
+        let message = format!("{error:#}");
+        assert!(message.contains("refusing to kill pid 5000"));
+        assert!(
+            !message.contains('\x1b'),
+            "process names in errors must be sanitized: {message:?}"
+        );
+    }
+
+    #[test]
+    fn partition_protected_skips_self_in_port_mode() {
+        let targets = vec![process_target(
+            999,
+            "portlens",
+            "portlens",
+            unknown_origin(),
+        )];
+        let (kept, skipped) =
+            partition_protected(targets, false, 999).expect("port mode should not fail");
+        assert!(kept.is_empty(), "portlens itself is never a target");
+        assert_eq!(skipped.len(), 1);
+    }
+
+    #[test]
+    fn critical_name_with_user_program_origin_is_killable() {
+        let name = critical_name();
+        assert_eq!(
+            critical_process_name(&[name], Some(&user_program_origin())),
+            None,
+            "a same-named program that is provably not the OS process stays killable"
+        );
+        assert_eq!(
+            critical_process_name(&[name], None),
+            Some(name),
+            "with no identity at all the name match fails safe"
+        );
+        assert_eq!(
+            critical_process_name(&[name], Some(&unknown_origin())),
+            Some(name),
+            "an unknown exe path or owner fails safe"
+        );
+        assert_eq!(
+            critical_process_name(&["node"], Some(&unknown_origin())),
+            None,
+            "names off the denylist are never critical"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_origin_requires_system32_path() {
+        let system32 = r"C:\Windows\System32";
+        for exe in [
+            r"C:\Windows\System32\lsass.exe",
+            r"c:\windows\system32\LSASS.EXE",
+            "C:/Windows/System32/services.exe",
+            r"\\?\C:\Windows\System32\wininit.exe",
+        ] {
+            assert!(is_path_under_dir(exe, system32), "{exe} is under System32");
+        }
+        for exe in [
+            r"C:\Users\dev\go\bin\services.exe",
+            r"C:\Windows\System32Evil\lsass.exe",
+            r"C:\Windows\lsass.exe",
+            r"C:\Windows\System32\..\Temp\lsass.exe",
+            r"D:\Windows\System32\lsass.exe",
+        ] {
+            assert!(
+                !is_path_under_dir(exe, system32),
+                "{exe} is not under System32"
+            );
+        }
+        assert!(
+            is_path_under_dir(r"C:\Windows\System32\lsass.exe", r"C:\Windows\System32\"),
+            "a trailing separator on the directory is accepted"
+        );
+
+        let system32_dir = system32_dir().expect("GetSystemDirectoryW succeeds");
+        let real = ProcessOrigin {
+            exe: Some(std::path::PathBuf::from(&system32_dir).join("lsass.exe")),
+        };
+        assert!(
+            is_system_origin(&real),
+            "the real lsass is a system process"
+        );
+        assert!(
+            is_system_origin(&ProcessOrigin { exe: None }),
+            "an unreadable exe path (not elevated) fails safe"
+        );
+        assert!(!is_system_origin(&user_program_origin()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_origin_fails_closed() {
+        use std::path::Path;
+
+        let system32 = Some(r"C:\Windows\System32");
+        for exe in [
+            "",
+            r"\\.\C:\Users\dev\lsass.exe",
+            r"\??\C:\Users\dev\lsass.exe",
+            r"\Device\HarddiskVolume3\Users\dev\lsass.exe",
+            r"\SystemRoot\System32\lsass.exe",
+            r"C:\WINDOW~1\SYSTEM~1\lsass.exe",
+            r"\\server\share\lsass.exe",
+            r"C:\Users\dev\..\..\Windows\System32\lsass.exe",
+            "lsass.exe",
+        ] {
+            assert!(
+                is_system_exe(Some(Path::new(exe)), system32),
+                "{exe:?} must be treated as a system process"
+            );
+        }
+        assert!(
+            is_system_exe(Some(Path::new(r"C:\Users\dev\services.exe")), None),
+            "a failed system directory lookup fails safe"
+        );
+        assert!(!is_system_exe(
+            Some(Path::new(r"C:\Users\dev\go\bin\services.exe")),
+            system32
+        ));
+        assert!(!is_system_exe(
+            Some(Path::new(r"\\?\D:\tools\lsass.exe")),
+            system32
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_dir_ignores_system_root_env() {
+        let dir = system32_dir().expect("GetSystemDirectoryW succeeds");
+        assert!(
+            dir.to_ascii_lowercase().ends_with(r"\system32"),
+            "unexpected system directory {dir}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_system_origin_requires_root_or_init_parent() {
+        let origin = |root_owned, parent_pid| ProcessOrigin {
+            root_owned,
+            parent_pid,
+        };
+        assert!(
+            is_system_origin(&origin(Some(true), Some(4321))),
+            "root-owned is system"
+        );
+        assert!(
+            is_system_origin(&origin(Some(false), Some(1))),
+            "a child of init (systemd --user) is system"
+        );
+        assert!(
+            is_system_origin(&origin(Some(false), None)),
+            "parent pid 0 (reported as None) is system"
+        );
+        assert!(
+            is_system_origin(&origin(None, Some(4321))),
+            "an unknown owner fails safe"
+        );
+        assert!(
+            !is_system_origin(&origin(Some(false), Some(4321))),
+            "a user's binary started from a shell is not system"
+        );
     }
 
     #[test]
