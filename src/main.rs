@@ -354,7 +354,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
         .filter(|arg| SUBCOMMANDS.contains(arg))
     {
         bail!(
-            "top-level options cannot be used with the '{name}' subcommand (it must come first): {remaining:?}"
+            "'{name}' must be the first argument; top-level options cannot be combined with a subcommand"
         );
     }
     if !remaining.is_empty() {
@@ -841,8 +841,7 @@ mod tests {
             .expect_err("top-level flags must not be silently ignored for kill");
 
         assert!(
-            format!("{error:#}")
-                .contains("top-level options cannot be used with the 'kill' subcommand"),
+            format!("{error:#}").contains("'kill' must be the first argument"),
             "kill should reject stray top-level flags before the subcommand"
         );
     }
@@ -853,8 +852,7 @@ mod tests {
             .expect_err("top-level flags must not be silently ignored for update");
 
         assert!(
-            format!("{error:#}")
-                .contains("top-level options cannot be used with the 'update' subcommand"),
+            format!("{error:#}").contains("'update' must be the first argument"),
             "update should reject stray top-level flags before the subcommand"
         );
     }
@@ -919,8 +917,7 @@ mod tests {
             .expect_err("--json is not a valid top-level option for update");
 
         assert!(
-            format!("{error:#}")
-                .contains("top-level options cannot be used with the 'update' subcommand"),
+            format!("{error:#}").contains("'update' must be the first argument"),
             "only --trace may accompany a subcommand: {error:#}"
         );
     }
@@ -944,7 +941,7 @@ mod tests {
             .expect_err("a subcommand is only recognized in first position");
 
         assert!(
-            format!("{error:#}").contains("must come first"),
+            format!("{error:#}").contains("must be the first argument"),
             "a misplaced subcommand should get a targeted hint: {error:#}"
         );
     }
