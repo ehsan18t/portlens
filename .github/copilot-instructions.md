@@ -14,7 +14,7 @@
 | Platform   | Cross-platform (Linux x86-64, Windows x86-64) |
 | Binary     | Single CLI executable                         |
 | License    | MIT                                           |
-| Min Rust   | latest stable (currently 1.93+)               |
+| Min Rust   | 1.89 (`rust-version`, checked by the MSRV job) |
 | Repository | `https://github.com/ehsan18t/portlens`        |
 
 ---

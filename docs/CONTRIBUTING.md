@@ -8,7 +8,7 @@ Thank you for your interest in contributing!
 
 ### Prerequisites
 
-- Rust stable toolchain (1.93+)
+- Rust stable toolchain (the minimum supported version is 1.89, see `rust-version` in Cargo.toml)
 - `cargo-deny` (optional, for dependency audit)
 - Supported lint targets:
 
