@@ -115,7 +115,7 @@ pub fn collect(options: &CollectOptions) -> Result<Collection> {
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.
     let docker_handle = if options.deep_enrichment {
-        Some(docker::start_detection(home.clone()))
+        Some(docker::Client::new().home(home.clone()).start_detection())
     } else {
         None
     };
@@ -213,14 +213,21 @@ pub fn log_detection_error(error: &docker::Error) {
 /// from the environment (`DOCKER_HOST`) and is sanitized for the terminal.
 #[must_use]
 pub fn container_detection_hint(error: &docker::Error) -> Option<String> {
-    let docker::Error::PermissionDenied { endpoint } = error else {
+    let docker::Error::PermissionDenied { endpoint, .. } = error else {
         return None;
     };
-    Some(format!(
+    Some(permission_denied_hint(endpoint))
+}
+
+/// The hint text for a permission problem on `endpoint`, sanitized for the
+/// terminal. Split out so it can be tested without building a
+/// `nanodock::Error`, whose data variants are non-exhaustive.
+fn permission_denied_hint(endpoint: &str) -> String {
+    format!(
         "container detection skipped: permission denied on {} ({})",
         crate::display::sanitize_for_terminal(endpoint),
         permission_remedy(endpoint)
-    ))
+    )
 }
 
 #[cfg(windows)]
@@ -335,10 +342,7 @@ mod tests {
 
     #[test]
     fn permission_denied_gets_a_sanitized_one_line_hint() {
-        let error = docker::Error::PermissionDenied {
-            endpoint: "/var/run/docker.sock\x1b]0;pwned\x07\nnext".to_string(),
-        };
-        let hint = container_detection_hint(&error).expect("permission denied should get a hint");
+        let hint = permission_denied_hint("/var/run/docker.sock\x1b]0;pwned\x07\nnext");
         assert!(
             hint.starts_with(
                 "container detection skipped: permission denied on /var/run/docker.sock"
@@ -352,17 +356,10 @@ mod tests {
     }
 
     #[test]
-    fn other_detection_failures_get_no_hint() {
-        for error in [
-            docker::Error::DaemonNotFound,
-            docker::Error::Timeout,
-            docker::Error::HttpStatus(500),
-            docker::Error::Io(std::io::Error::other("boom")),
-        ] {
-            assert!(
-                container_detection_hint(&error).is_none(),
-                "{error:?} should only be logged under --trace"
-            );
-        }
+    fn missing_runtime_gets_no_hint() {
+        assert!(
+            container_detection_hint(&docker::Error::DaemonNotFound).is_none(),
+            "no runtime installed is normal and should only be logged under --trace"
+        );
     }
 }

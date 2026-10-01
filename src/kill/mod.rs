@@ -229,9 +229,13 @@ fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
                 "stopping container: id={} name={} force={force}",
                 ct.container_id, ct.container_name
             );
-            let outcome =
-                crate::docker::stop_container(&ct.container_id, force, what_stack::home_dir());
-            KillReportEntry::from_container_outcome(ct, outcome)
+            let client = crate::docker::Client::new().home(what_stack::home_dir());
+            let outcome = if force {
+                client.kill(&ct.container_id)
+            } else {
+                client.stop(&ct.container_id)
+            };
+            KillReportEntry::from_container_outcome(ct, &outcome)
         }
     }
 }

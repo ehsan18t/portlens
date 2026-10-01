@@ -65,7 +65,9 @@ pub enum ResolvedTarget {
 /// process [`Target`].
 pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // Start Docker detection early so it overlaps with socket enumeration.
-    let docker_handle = docker::start_detection(what_stack::home_dir());
+    let docker_handle = docker::Client::new()
+        .home(what_stack::home_dir())
+        .start_detection();
 
     let entries = collector::collect_with_options(&CollectOptions {
         deep_enrichment: false,
@@ -212,7 +214,7 @@ fn container_target_for_entry(
     );
 
     let info = match api_match {
-        PublishedContainerMatch::Match(info) => Some(info.clone()),
+        PublishedContainerMatch::Match(info) => Some(docker::ContainerInfo::clone(info)),
         PublishedContainerMatch::Ambiguous => {
             bail!(
                 "refusing to stop proxy pid {} ({}) on port {} because multiple containers publish the same port/protocol; use 'kill --pid' to target the proxy explicitly",

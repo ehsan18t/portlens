@@ -165,7 +165,7 @@ impl KillReportEntry {
 
     /// Build a report row from a container stop/kill attempt.
     #[must_use]
-    pub fn from_container_outcome(ct: ContainerTarget, outcome: StopOutcome) -> Self {
+    pub fn from_container_outcome(ct: ContainerTarget, outcome: &StopOutcome) -> Self {
         let (status, hint) = match outcome {
             StopOutcome::Stopped => (KillStatus::ContainerStopped, None),
             StopOutcome::AlreadyStopped => (KillStatus::ContainerAlreadyStopped, None),
@@ -382,7 +382,7 @@ mod tests {
             proxy_pid: 100,
             proxy_process: "docker-proxy".to_string(),
         };
-        let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::Stopped);
+        let entry = KillReportEntry::from_container_outcome(ct, &StopOutcome::Stopped);
         assert_eq!(entry.status, KillStatus::ContainerStopped);
         assert_eq!(entry.container_name.as_deref(), Some("postgres"));
         assert_eq!(
@@ -402,7 +402,7 @@ mod tests {
             proxy_pid: 200,
             proxy_process: "docker-proxy".to_string(),
         };
-        let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::AlreadyStopped);
+        let entry = KillReportEntry::from_container_outcome(ct, &StopOutcome::AlreadyStopped);
         assert_eq!(entry.status, KillStatus::ContainerAlreadyStopped);
         assert!(!entry.is_failure());
     }
@@ -441,7 +441,7 @@ mod tests {
         ];
 
         for (outcome, status, token, hint) in cases {
-            let entry = KillReportEntry::from_container_outcome(web_target(), outcome);
+            let entry = KillReportEntry::from_container_outcome(web_target(), &outcome);
             assert_eq!(entry.status, status, "{outcome:?} should map to {status:?}");
             assert!(entry.is_failure(), "{outcome:?} must count as a failure");
             assert_eq!(
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn no_response_is_not_reported_as_a_failed_stop() {
-        let entry = KillReportEntry::from_container_outcome(web_target(), StopOutcome::NoResponse);
+        let entry = KillReportEntry::from_container_outcome(web_target(), &StopOutcome::NoResponse);
         assert_eq!(
             format_container_line(&entry, "web"),
             "stop of container 'web' (abc123) was not confirmed; the daemon received the stop request but did not confirm it; the container may still be stopping"
