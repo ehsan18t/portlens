@@ -5,6 +5,10 @@
 //! - **Linux**: parses `/proc/net/tcp` and `/proc/net/tcp6`.
 //! - **Windows**: calls `GetExtendedTcpTable` via FFI.
 //! - **Other**: returns an empty index (state enrichment unavailable).
+//!
+//! Windows rows carry the owning PID, and `listeners` reports one socket per
+//! `(local address, pid)` pair, so Windows states are keyed by both. Linux
+//! rows only carry an inode, so Linux states stay keyed by local address.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -12,8 +16,55 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use crate::types::State;
 use log::debug;
 
-/// Maps a local socket address to its aggregated TCP state.
-pub(super) type TcpStateIndex = HashMap<SocketAddr, State>;
+/// One slot in the [`TcpStateIndex`]: a local socket plus the owning PID when
+/// the OS table reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TcpStateKey {
+    socket: SocketAddr,
+    pid: Option<u32>,
+}
+
+/// Aggregated TCP states keyed by local socket and, where available, owning PID.
+///
+/// PID-keyed slots (Windows) only ever answer lookups for that exact PID, so a
+/// row owned by one process can never relabel a socket owned by another.
+/// PID-agnostic slots (Linux) answer lookups for any PID on that socket.
+#[derive(Debug, Default)]
+pub(super) struct TcpStateIndex {
+    states: HashMap<TcpStateKey, State>,
+}
+
+impl TcpStateIndex {
+    /// Fold one kernel table row into the index.
+    ///
+    /// Rows that share a slot are combined with [`merge_state`].
+    pub(super) fn merge(&mut self, socket: SocketAddr, pid: Option<u32>, state: State) {
+        use std::collections::hash_map::Entry;
+
+        match self.states.entry(TcpStateKey { socket, pid }) {
+            Entry::Occupied(mut slot) => {
+                slot.insert(merge_state(*slot.get(), state));
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(state);
+            }
+        }
+    }
+
+    /// Return the TCP state for the socket owned by `pid`.
+    ///
+    /// An exact `(socket, pid)` slot wins; otherwise a PID-agnostic slot for
+    /// the socket is used. Returns `None` when neither exists.
+    pub(super) fn lookup(&self, socket: SocketAddr, pid: u32) -> Option<State> {
+        self.states
+            .get(&TcpStateKey {
+                socket,
+                pid: Some(pid),
+            })
+            .or_else(|| self.states.get(&TcpStateKey { socket, pid: None }))
+            .copied()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Linux: /proc/net/tcp{,6}
@@ -21,10 +72,13 @@ pub(super) type TcpStateIndex = HashMap<SocketAddr, State>;
 
 #[cfg(target_os = "linux")]
 pub(super) fn load_tcp_state_index() -> TcpStateIndex {
-    let mut index = TcpStateIndex::new();
+    let mut index = TcpStateIndex::default();
     extend_linux_tcp_state_index("/proc/net/tcp", false, &mut index);
     extend_linux_tcp_state_index("/proc/net/tcp6", true, &mut index);
-    debug!("loaded linux tcp state index: entries={}", index.len());
+    debug!(
+        "loaded linux tcp state index: entries={}",
+        index.states.len()
+    );
     index
 }
 
@@ -46,8 +100,10 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
             parse_linux_tcp_table_entry(&line)
         };
 
+        // /proc/net/tcp exposes an inode rather than a PID, so Linux slots
+        // stay PID-agnostic.
         if let Some((socket, state)) = parsed {
-            merge_tcp_state(index, socket, state);
+            index.merge(socket, None, state);
         }
         line.clear();
     }
@@ -130,10 +186,35 @@ const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 0x7A;
 #[cfg(windows)]
 const NO_ERROR: u32 = 0;
-#[cfg(windows)]
-const WINDOWS_TCP4_ROW_SIZE: usize = 24;
-#[cfg(windows)]
-const WINDOWS_TCP6_ROW_SIZE: usize = 56;
+
+/// Byte layout of one `GetExtendedTcpTable` `OWNER_PID` row.
+#[cfg(any(test, windows))]
+struct WindowsRowLayout {
+    size: usize,
+    state_offset: usize,
+    pid_offset: usize,
+    socket_from_row: fn(&[u8]) -> Option<SocketAddr>,
+}
+
+/// `MIB_TCPROW_OWNER_PID`: state, local addr, local port, remote addr,
+/// remote port, owning PID (six `u32` fields).
+#[cfg(any(test, windows))]
+const WINDOWS_TCP4_LAYOUT: WindowsRowLayout = WindowsRowLayout {
+    size: 24,
+    state_offset: 0,
+    pid_offset: 20,
+    socket_from_row: windows_tcpv4_socket,
+};
+
+/// `MIB_TCP6ROW_OWNER_PID`: local addr (16), local scope id, local port,
+/// remote addr (16), remote scope id, remote port, state, owning PID.
+#[cfg(any(test, windows))]
+const WINDOWS_TCP6_LAYOUT: WindowsRowLayout = WindowsRowLayout {
+    size: 56,
+    state_offset: 48,
+    pid_offset: 52,
+    socket_from_row: windows_tcpv6_socket,
+};
 
 #[cfg(windows)]
 #[link(name = "iphlpapi")]
@@ -151,14 +232,17 @@ unsafe extern "system" {
 
 #[cfg(windows)]
 pub(super) fn load_tcp_state_index() -> TcpStateIndex {
-    let mut index = TcpStateIndex::new();
+    let mut index = TcpStateIndex::default();
     if let Some(table) = read_windows_tcp_table(AF_INET) {
-        extend_windows_tcpv4_state_index(&table, &mut index);
+        extend_windows_tcp_state_index(&table, &WINDOWS_TCP4_LAYOUT, &mut index);
     }
     if let Some(table) = read_windows_tcp_table(AF_INET6) {
-        extend_windows_tcpv6_state_index(&table, &mut index);
+        extend_windows_tcp_state_index(&table, &WINDOWS_TCP6_LAYOUT, &mut index);
     }
-    debug!("loaded windows tcp state index: entries={}", index.len());
+    debug!(
+        "loaded windows tcp state index: entries={}",
+        index.states.len()
+    );
     index
 }
 
@@ -213,46 +297,41 @@ fn read_windows_tcp_table(address_family: u32) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg(windows)]
-fn extend_windows_tcpv4_state_index(table: &[u8], index: &mut TcpStateIndex) {
-    extend_windows_tcp_state_index(table, WINDOWS_TCP4_ROW_SIZE, 0, index, windows_tcpv4_socket);
-}
-
-#[cfg(windows)]
-fn extend_windows_tcpv6_state_index(table: &[u8], index: &mut TcpStateIndex) {
-    extend_windows_tcp_state_index(
-        table,
-        WINDOWS_TCP6_ROW_SIZE,
-        48,
-        index,
-        windows_tcpv6_socket,
-    );
-}
-
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 fn extend_windows_tcp_state_index(
     table: &[u8],
-    row_size: usize,
-    state_offset: usize,
+    layout: &WindowsRowLayout,
     index: &mut TcpStateIndex,
-    socket_from_row: fn(&[u8]) -> Option<SocketAddr>,
 ) {
     let Some(rows_count) = windows_rows_count(table) else {
         return;
     };
 
-    for row in table[4..].chunks_exact(row_size).take(rows_count) {
-        let Some(state_code) = read_u32_ne(row, state_offset) else {
+    for row in table[4..].chunks_exact(layout.size).take(rows_count) {
+        let Some((socket, pid, state)) = parse_windows_tcp_row(row, layout) else {
             continue;
         };
-        let Some(socket) = socket_from_row(row) else {
+        // PID 0 ([System Process]) only owns orphaned TIME_WAIT rows and never
+        // a real listener, so it must not surface as a killable LISTEN socket.
+        if pid == 0 && state == State::Listen {
             continue;
-        };
-        merge_tcp_state(index, socket, state_from_windows_code(state_code));
+        }
+        index.merge(socket, Some(pid), state);
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
+fn parse_windows_tcp_row(
+    row: &[u8],
+    layout: &WindowsRowLayout,
+) -> Option<(SocketAddr, u32, State)> {
+    let state_code = read_u32_ne(row, layout.state_offset)?;
+    let pid = read_u32_ne(row, layout.pid_offset)?;
+    let socket = (layout.socket_from_row)(row)?;
+    Some((socket, pid, state_from_windows_code(state_code)))
+}
+
+#[cfg(any(test, windows))]
 fn windows_tcpv4_socket(row: &[u8]) -> Option<SocketAddr> {
     let local_addr = read_u32_ne(row, 4)?;
     let port = read_windows_port(row, 8)?;
@@ -262,7 +341,7 @@ fn windows_tcpv4_socket(row: &[u8]) -> Option<SocketAddr> {
     ))
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 fn windows_tcpv6_socket(row: &[u8]) -> Option<SocketAddr> {
     let local_addr_bytes = row.get(0..16)?;
     let port = read_windows_port(row, 20)?;
@@ -273,12 +352,12 @@ fn windows_tcpv6_socket(row: &[u8]) -> Option<SocketAddr> {
     ))
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 fn windows_rows_count(table: &[u8]) -> Option<usize> {
     usize::try_from(read_u32_ne(table, 0)?).ok()
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 fn read_u32_ne(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     let raw = bytes.get(offset..end)?;
@@ -286,7 +365,7 @@ fn read_u32_ne(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_ne_bytes(array))
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 fn read_windows_port(bytes: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
     let raw = bytes.get(offset..end)?;
@@ -301,25 +380,12 @@ fn read_windows_port(bytes: &[u8], offset: usize) -> Option<u16> {
 #[cfg(not(any(target_os = "linux", windows)))]
 pub(super) fn load_tcp_state_index() -> TcpStateIndex {
     debug!("tcp state enrichment unavailable on this platform");
-    TcpStateIndex::new()
+    TcpStateIndex::default()
 }
 
 // ---------------------------------------------------------------------------
 // Shared state merging
 // ---------------------------------------------------------------------------
-
-pub(super) fn merge_tcp_state(index: &mut TcpStateIndex, socket: SocketAddr, state: State) {
-    use std::collections::hash_map::Entry;
-
-    match index.entry(socket) {
-        Entry::Occupied(mut slot) => {
-            slot.insert(merge_state(*slot.get(), state));
-        }
-        Entry::Vacant(slot) => {
-            slot.insert(state);
-        }
-    }
-}
 
 fn merge_state(current: State, next: State) -> State {
     if current == next {
@@ -419,21 +485,203 @@ mod tests {
     }
 
     #[test]
-    fn merge_tcp_state_keeps_listen_when_states_conflict() {
+    fn pid_agnostic_merge_keeps_listen_when_states_conflict() {
         let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5432);
-        let mut index = HashMap::new();
+        let mut index = TcpStateIndex::default();
 
-        merge_tcp_state(&mut index, socket, State::Established);
-        merge_tcp_state(&mut index, socket, State::Listen);
+        index.merge(socket, None, State::Established);
+        index.merge(socket, None, State::Listen);
 
         assert_eq!(
-            index.get(&socket).copied(),
+            index.lookup(socket, 1234),
             Some(State::Listen),
             "the aggregate state for a shared local socket should prefer LISTEN"
         );
     }
 
-    #[cfg(windows)]
+    #[test]
+    fn pid_agnostic_slot_answers_lookups_for_any_pid() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 22);
+        let mut index = TcpStateIndex::default();
+        index.merge(socket, None, State::Listen);
+
+        assert_eq!(
+            index.lookup(socket, 42),
+            Some(State::Listen),
+            "Linux slots carry no PID and must keep serving every PID on the socket"
+        );
+    }
+
+    // Synthetic GetExtendedTcpTable rows. Field encodings follow the Win32
+    // docs: dwState and dwOwningPid are host-order u32, dwLocalAddr holds
+    // the address in network order, and dwLocalPort keeps the port in
+    // network order in its low two bytes.
+
+    const STATE_LISTEN: u32 = 2;
+    const STATE_ESTABLISHED: u32 = 5;
+    const STATE_CLOSE_WAIT: u32 = 8;
+    const STATE_TIME_WAIT: u32 = 11;
+
+    fn tcpv4_row(state_code: u32, ip: Ipv4Addr, port: u16, pid: u32) -> Vec<u8> {
+        let mut row = vec![0_u8; WINDOWS_TCP4_LAYOUT.size];
+        row[0..4].copy_from_slice(&state_code.to_ne_bytes());
+        row[4..8].copy_from_slice(&ip.octets());
+        row[8..10].copy_from_slice(&port.to_be_bytes());
+        row[20..24].copy_from_slice(&pid.to_ne_bytes());
+        row
+    }
+
+    fn tcpv6_row(state_code: u32, ip: Ipv6Addr, port: u16, pid: u32) -> Vec<u8> {
+        let mut row = vec![0_u8; WINDOWS_TCP6_LAYOUT.size];
+        row[0..16].copy_from_slice(&ip.octets());
+        row[20..22].copy_from_slice(&port.to_be_bytes());
+        row[48..52].copy_from_slice(&state_code.to_ne_bytes());
+        row[52..56].copy_from_slice(&pid.to_ne_bytes());
+        row
+    }
+
+    fn windows_table(rows: &[Vec<u8>]) -> Vec<u8> {
+        let count = u32::try_from(rows.len()).unwrap();
+        let mut table = count.to_ne_bytes().to_vec();
+        for row in rows {
+            table.extend_from_slice(row);
+        }
+        table
+    }
+
+    fn index_from_tcpv4_rows(rows: &[Vec<u8>]) -> TcpStateIndex {
+        let mut index = TcpStateIndex::default();
+        extend_windows_tcp_state_index(&windows_table(rows), &WINDOWS_TCP4_LAYOUT, &mut index);
+        index
+    }
+
+    #[test]
+    fn windows_tcpv4_row_parses_socket_pid_and_state() {
+        let row = tcpv4_row(STATE_LISTEN, Ipv4Addr::new(192, 168, 1, 5), 8080, 4321);
+        assert_eq!(
+            parse_windows_tcp_row(&row, &WINDOWS_TCP4_LAYOUT),
+            Some((
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 8080),
+                4321,
+                State::Listen
+            )),
+            "the synthetic row encoding should round-trip through the parser"
+        );
+    }
+
+    #[test]
+    fn pid0_time_wait_rows_do_not_produce_listen_on_listener_address() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let socket = SocketAddr::new(IpAddr::V4(ip), 58393);
+        let index = index_from_tcpv4_rows(&[
+            tcpv4_row(STATE_LISTEN, ip, 58393, 27380),
+            tcpv4_row(STATE_TIME_WAIT, ip, 58393, 0),
+            tcpv4_row(STATE_TIME_WAIT, ip, 58393, 0),
+            tcpv4_row(STATE_TIME_WAIT, ip, 58393, 0),
+        ]);
+
+        assert_eq!(
+            index.lookup(socket, 0),
+            Some(State::TimeWait),
+            "PID 0 rows sharing a listener's address must keep their own TIME_WAIT state"
+        );
+        assert_eq!(
+            index.lookup(socket, 27380),
+            Some(State::Listen),
+            "the real listener must stay LISTEN"
+        );
+    }
+
+    #[test]
+    fn pid0_listen_row_is_never_indexed() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let index = index_from_tcpv4_rows(&[tcpv4_row(STATE_LISTEN, ip, 9000, 0)]);
+
+        assert_eq!(
+            index.lookup(SocketAddr::new(IpAddr::V4(ip), 9000), 0),
+            None,
+            "PID 0 never owns a real listener, so it must not be labeled LISTEN"
+        );
+    }
+
+    #[test]
+    fn distinct_pids_on_shared_local_address_keep_their_own_state() {
+        let ip = Ipv4Addr::new(10, 0, 0, 5);
+        let socket = SocketAddr::new(IpAddr::V4(ip), 443);
+        let index = index_from_tcpv4_rows(&[
+            tcpv4_row(STATE_LISTEN, ip, 443, 300),
+            tcpv4_row(STATE_ESTABLISHED, ip, 443, 100),
+            tcpv4_row(STATE_CLOSE_WAIT, ip, 443, 200),
+        ]);
+
+        assert_eq!(
+            index.lookup(socket, 300),
+            Some(State::Listen),
+            "the listener owner keeps LISTEN"
+        );
+        assert_eq!(
+            index.lookup(socket, 100),
+            Some(State::Established),
+            "an accepted connection owned by another PID must not inherit LISTEN"
+        );
+        assert_eq!(
+            index.lookup(socket, 200),
+            Some(State::CloseWait),
+            "ESTABLISHED and CLOSE_WAIT rows from different PIDs must not merge to UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn pid_keyed_slots_do_not_answer_for_other_pids() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let index = index_from_tcpv4_rows(&[tcpv4_row(STATE_LISTEN, ip, 3000, 1234)]);
+
+        assert_eq!(
+            index.lookup(SocketAddr::new(IpAddr::V4(ip), 3000), 999),
+            None,
+            "a PID-keyed state must not leak to a different process on the same socket"
+        );
+    }
+
+    #[test]
+    fn windows_tcpv6_rows_are_keyed_by_pid() {
+        let ip = Ipv6Addr::LOCALHOST;
+        let socket = SocketAddr::new(IpAddr::V6(ip), 8080);
+        let table = windows_table(&[
+            tcpv6_row(STATE_LISTEN, ip, 8080, 50),
+            tcpv6_row(STATE_TIME_WAIT, ip, 8080, 0),
+        ]);
+        let mut index = TcpStateIndex::default();
+        extend_windows_tcp_state_index(&table, &WINDOWS_TCP6_LAYOUT, &mut index);
+
+        assert_eq!(
+            index.lookup(socket, 50),
+            Some(State::Listen),
+            "IPv6 listener owner keeps LISTEN"
+        );
+        assert_eq!(
+            index.lookup(socket, 0),
+            Some(State::TimeWait),
+            "IPv6 PID 0 rows keep TIME_WAIT"
+        );
+    }
+
+    #[test]
+    fn windows_table_walk_ignores_rows_beyond_buffer() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let mut table = windows_table(&[tcpv4_row(STATE_LISTEN, ip, 7000, 7)]);
+        // Claim three rows while only one is present.
+        table[0..4].copy_from_slice(&3_u32.to_ne_bytes());
+        let mut index = TcpStateIndex::default();
+        extend_windows_tcp_state_index(&table, &WINDOWS_TCP4_LAYOUT, &mut index);
+
+        assert_eq!(
+            index.lookup(SocketAddr::new(IpAddr::V4(ip), 7000), 7),
+            Some(State::Listen),
+            "an overstated row count must not read past the buffer"
+        );
+    }
+
     #[test]
     fn windows_port_reader_extracts_big_endian_port_bytes() {
         let row = [0x00, 0x50, 0x00, 0x00];

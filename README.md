@@ -238,11 +238,11 @@ Default columns:
 
 Additional columns with `--full`:
 
-| Column  | Description                                                                                                                        |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| ADDRESS | Local bind IP address                                                                                                              |
-| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, missing or ambiguous non-listener data shows `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable. On Windows, PortLens prefers the account name and falls back to a SID string when needed    |
+| Column  | Description                                                                                                                                                                                  |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADDRESS | Local bind IP address                                                                                                                                                                        |
+| STATE   | Best-effort TCP state. On Windows each row gets the state of its own owning process; on Linux shared local sockets prefer `LISTEN`. Missing or ambiguous data shows `UNKNOWN`, UDP shows `-` |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, PortLens prefers the account name and falls back to a SID string when needed                                                              |
 
 ---
 

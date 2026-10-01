@@ -40,7 +40,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         listeners::Protocol::UDP => Protocol::Udp,
     };
 
-    let state = resolve_state(l.protocol, l.socket, context.tcp_states);
+    let state = resolve_state(l.protocol, l.socket, l.process.pid, context.tcp_states);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
@@ -167,12 +167,15 @@ fn detect_process_app(process_name: &str, exe_name: Option<&str>) -> Option<AppL
 fn resolve_state(
     protocol: listeners::Protocol,
     socket: std::net::SocketAddr,
+    pid: u32,
     tcp_states: &TcpStateIndex,
 ) -> State {
     match protocol {
         // `listeners::get_all()` includes non-listening TCP sockets too, so a
         // missing OS state lookup must stay `UNKNOWN` instead of guessing LISTEN.
-        listeners::Protocol::TCP => tcp_states.get(&socket).copied().unwrap_or(State::Unknown),
+        // The PID matters on Windows, where several processes (including
+        // PID 0 for TIME_WAIT) can report rows on the same local address.
+        listeners::Protocol::TCP => tcp_states.lookup(socket, pid).unwrap_or(State::Unknown),
         listeners::Protocol::UDP => State::NotApplicable,
     }
 }
@@ -303,12 +306,36 @@ mod tests {
             socket,
             protocol: listeners::Protocol::TCP,
         };
-        let tcp_states = TcpStateIndex::new();
+        let tcp_states = TcpStateIndex::default();
 
         assert_eq!(
-            resolve_state(listener.protocol, listener.socket, &tcp_states),
+            resolve_state(
+                listener.protocol,
+                listener.socket,
+                listener.process.pid,
+                &tcp_states
+            ),
             State::Unknown,
             "missing TCP state data should stay UNKNOWN instead of guessing LISTEN"
+        );
+    }
+
+    #[test]
+    fn resolve_state_uses_the_owning_pid_slot() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 58393);
+        let mut tcp_states = TcpStateIndex::default();
+        tcp_states.merge(socket, Some(27380), State::Listen);
+        tcp_states.merge(socket, Some(0), State::TimeWait);
+
+        assert_eq!(
+            resolve_state(listeners::Protocol::TCP, socket, 0, &tcp_states),
+            State::TimeWait,
+            "a PID 0 socket on a listener's address must not be labeled LISTEN"
+        );
+        assert_eq!(
+            resolve_state(listeners::Protocol::TCP, socket, 27380, &tcp_states),
+            State::Listen,
+            "the real listener must stay LISTEN"
         );
     }
 
