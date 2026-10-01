@@ -100,6 +100,17 @@ pub struct FilterOptions {
     pub show_all: bool,
 }
 
+impl FilterOptions {
+    /// Whether the developer-relevance filter applies to these options.
+    ///
+    /// An explicit port, process, or grep query (or `--all`) turns it off so
+    /// targeted searches never hide a matching socket.
+    #[must_use]
+    pub const fn relevance_filter_active(&self) -> bool {
+        !(self.show_all || self.port.is_some() || self.process.is_some() || self.grep.is_some())
+    }
+}
+
 /// Check whether a port entry is considered developer-relevant.
 ///
 /// An entry is relevant if collection already attached a project or app label.
@@ -185,8 +196,7 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
     let original_len = entries.len();
     let process_filter = opts.process.as_deref().map(strip_windows_exe_suffix);
     let grep_pattern = opts.grep.as_deref().map(normalize_grep_pattern);
-    let bypass_relevance =
-        opts.show_all || opts.port.is_some() || process_filter.is_some() || grep_pattern.is_some();
+    let bypass_relevance = !opts.relevance_filter_active();
 
     debug!(
         "applying filters: input_entries={} tcp_only={} udp_only={} listen_only={} port={:?} process={:?} grep={:?} show_all={} bypass_relevance={}",
@@ -276,6 +286,42 @@ mod tests {
             show_all: true,
             ..default_filter()
         }
+    }
+
+    #[test]
+    fn relevance_filter_is_active_only_without_targeted_queries() {
+        assert!(default_filter().relevance_filter_active());
+        assert!(
+            FilterOptions {
+                tcp_only: true,
+                listen_only: true,
+                ..default_filter()
+            }
+            .relevance_filter_active(),
+            "protocol and state flags keep the relevance filter on"
+        );
+        assert!(!show_all_filter().relevance_filter_active());
+        assert!(
+            !FilterOptions {
+                port: Some(PortFilter::Single(3000)),
+                ..default_filter()
+            }
+            .relevance_filter_active()
+        );
+        assert!(
+            !FilterOptions {
+                process: Some("node".to_string()),
+                ..default_filter()
+            }
+            .relevance_filter_active()
+        );
+        assert!(
+            !FilterOptions {
+                grep: Some("dock".to_string()),
+                ..default_filter()
+            }
+            .relevance_filter_active()
+        );
     }
 
     fn port_filter_option(port: u16) -> FilterOptions {

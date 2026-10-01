@@ -50,6 +50,28 @@ pub fn print_json(entries: &[PortEntry]) -> Result<()> {
     write_json(&mut io::stdout().lock(), entries)
 }
 
+/// Print a one-line explanation of an empty table to stderr.
+///
+/// `relevance_filter_active` selects the wording: when the default
+/// developer-relevance filter hid everything, the hint points at `-a`.
+pub fn print_empty_hint(relevance_filter_active: bool) -> Result<()> {
+    writeln!(
+        io::stderr().lock(),
+        "{}",
+        empty_result_hint(relevance_filter_active)
+    )
+    .context("failed to write empty-result hint to stderr")
+}
+
+/// Choose the empty-result hint for the active filters.
+const fn empty_result_hint(relevance_filter_active: bool) -> &'static str {
+    if relevance_filter_active {
+        "No developer-relevant ports found (use -a to show all)"
+    } else {
+        "No matching ports"
+    }
+}
+
 /// Print the interactive tips footer to stderr.
 pub fn print_tips() -> Result<()> {
     tips::write_tips(&mut io::stderr().lock())
@@ -116,6 +138,15 @@ mod tests {
             output.contains("\"app\": \"Next.js\""),
             "JSON should contain app label"
         );
+    }
+
+    #[test]
+    fn empty_result_hint_points_at_all_flag_only_when_relevance_filter_hid_rows() {
+        assert_eq!(
+            empty_result_hint(true),
+            "No developer-relevant ports found (use -a to show all)"
+        );
+        assert_eq!(empty_result_hint(false), "No matching ports");
     }
 
     #[test]

@@ -548,18 +548,16 @@ fn run(cli: Cli) -> Result<u8> {
     })?;
     debug!("collected {} raw entries before filtering", entries.len());
 
-    let filtered = filter::apply(
-        entries,
-        &filter::FilterOptions {
-            tcp_only: cli.tcp,
-            udp_only: cli.udp,
-            listen_only: cli.listen,
-            port: cli.port,
-            process: cli.process,
-            grep: cli.grep,
-            show_all: cli.all,
-        },
-    );
+    let filter_options = filter::FilterOptions {
+        tcp_only: cli.tcp,
+        udp_only: cli.udp,
+        listen_only: cli.listen,
+        port: cli.port,
+        process: cli.process,
+        grep: cli.grep,
+        show_all: cli.all,
+    };
+    let filtered = filter::apply(entries, &filter_options);
     debug!("filter pass complete: {} entries surviving", filtered.len());
 
     if cli.json {
@@ -581,6 +579,11 @@ fn run(cli: Cli) -> Result<u8> {
                 compact: cli.compact,
             },
         )?;
+
+        // JSON stays a bare `[]`; only a person at a terminal gets the hint.
+        if filtered.is_empty() && std::io::stderr().is_terminal() {
+            display::print_empty_hint(filter_options.relevance_filter_active())?;
+        }
     }
 
     if std::io::stderr().is_terminal()
