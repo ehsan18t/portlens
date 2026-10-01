@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::platform::KillOutcome;
 use super::resolve::ContainerTarget;
+use crate::display::sanitize_for_terminal;
 use crate::docker::StopOutcome;
 
 /// Machine-friendly status token for a kill report entry.
@@ -212,7 +213,7 @@ pub fn print_human(entries: &[KillReportEntry]) -> Result<()> {
             || format_process_line(e),
             |name| format_container_line(e, name),
         );
-        writeln!(out, "{line}").context("failed to write kill report")?;
+        writeln!(out, "{}", sanitize_for_terminal(&line)).context("failed to write kill report")?;
     }
     Ok(())
 }

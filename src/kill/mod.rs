@@ -20,6 +20,7 @@ use log::debug;
 use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
 use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
+use crate::display::sanitize_for_terminal;
 use crate::filter::PortFilter;
 
 /// Target selector for a kill invocation.
@@ -295,13 +296,20 @@ fn count_target_kinds(targets: &[ResolvedTarget]) -> (usize, usize) {
 fn write_target_line(writer: &mut impl Write, target: &ResolvedTarget) -> std::io::Result<()> {
     match target {
         ResolvedTarget::Process(p) => {
-            writeln!(writer, "  pid {} ({})", p.pid, p.process)
+            writeln!(
+                writer,
+                "  pid {} ({})",
+                p.pid,
+                sanitize_for_terminal(&p.process)
+            )
         }
         ResolvedTarget::Container(ct) => {
             writeln!(
                 writer,
                 "  container '{}' [proxy pid {} ({})]",
-                ct.container_name, ct.proxy_pid, ct.proxy_process
+                sanitize_for_terminal(&ct.container_name),
+                ct.proxy_pid,
+                sanitize_for_terminal(&ct.proxy_process)
             )
         }
     }

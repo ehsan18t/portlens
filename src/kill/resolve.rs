@@ -14,6 +14,7 @@ use anyhow::{Result, bail};
 use log::debug;
 
 use crate::collector::{self, CollectOptions};
+use crate::display::sanitize_for_terminal;
 use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
 use crate::filter::PortFilter;
 use crate::types::{PortEntry, Protocol, State};
@@ -176,7 +177,7 @@ fn container_target_for_entry(
             bail!(
                 "refusing to stop proxy pid {} ({}) on port {} because multiple containers publish the same port/protocol; use 'kill --pid' to target the proxy explicitly",
                 entry.pid,
-                entry.process,
+                sanitize_for_terminal(entry.process.as_ref()),
                 entry.port
             );
         }
@@ -197,7 +198,7 @@ fn container_target_for_entry(
         bail!(
             "refusing to kill proxy pid {} ({}) on port {} because the container could not be resolved; ensure the container runtime daemon is reachable or use 'kill --pid' to target the proxy explicitly",
             entry.pid,
-            entry.process,
+            sanitize_for_terminal(entry.process.as_ref()),
             entry.port
         );
     };
@@ -320,6 +321,25 @@ mod tests {
         assert!(
             format!("{error:#}").contains("refusing to kill proxy pid"),
             "port-based kill should refuse unresolved container proxies"
+        );
+    }
+
+    #[test]
+    fn container_target_errors_sanitize_process_names() {
+        let entry = make_entry(5432, Protocol::Tcp, State::Listen, "proxy\x1b]0;pwned\x07");
+        let error = container_target_for_entry(
+            &ContainerPortMap::default(),
+            &entry,
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect_err("unresolved proxy ports must be refused");
+        let message = format!("{error:#}");
+        assert!(
+            !message.contains(['\x1b', '\x07']),
+            "process names in errors must be sanitized: {message:?}"
         );
     }
 
