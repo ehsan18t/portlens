@@ -226,6 +226,14 @@ Safety:
 
 Check for a new release and optionally self-update the binary. Use `--check` to only check.
 
+Every update is verified before the running binary is replaced:
+
+- The downloaded asset's SHA-256 must match its entry in the release's `SHA256SUMS` file. If the release has no `SHA256SUMS`, or the file does not list the asset, the update is refused.
+- Requests start only at this repository's release URLs for the exact release being installed; redirects must stay on HTTPS.
+- The new binary is run with `--version` and must report the expected version.
+
+To verify a download manually, run `sha256sum -c SHA256SUMS --ignore-missing` in the download folder, or check its build provenance with `gh attestation verify <file> -R ehsan18t/portlens`.
+
 ---
 
 ## Output Columns
