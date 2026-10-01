@@ -77,6 +77,24 @@ pub fn print_tips() -> Result<()> {
     tips::write_tips(&mut io::stderr().lock())
 }
 
+/// Check whether an error was caused by writing to a closed pipe.
+///
+/// Walks the whole `anyhow` context chain. `serde_json` errors are checked
+/// separately because `serde_json::Error` does not expose the wrapped
+/// `io::Error` through `source()`.
+#[must_use]
+pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+            || cause
+                .downcast_ref::<serde_json::Error>()
+                .and_then(serde_json::Error::io_error_kind)
+                == Some(io::ErrorKind::BrokenPipe)
+    })
+}
+
 // ── JSON output ─────────────────────────────────────────────────────
 
 /// Render entries as a JSON array to the given writer.

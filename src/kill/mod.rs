@@ -20,7 +20,7 @@ use log::debug;
 use self::platform::{ProcessOrigin, kill_pid, pid_exists};
 use self::report::KillReportEntry;
 use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
-use crate::display::sanitize_for_terminal;
+use crate::display::{is_broken_pipe, sanitize_for_terminal};
 use crate::filter::PortFilter;
 
 /// Target selector for a kill invocation.
@@ -153,12 +153,22 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
     if targets.is_empty() {
         // Only reachable in `--port` mode: `--pid` refuses a protected target.
         eprintln!("nothing to kill: every matching process is protected");
-        print_report(&skipped, opts.json)?;
-        return Ok(EXIT_ALL_PROTECTED);
+        return report_then_exit(&skipped, opts.json, EXIT_ALL_PROTECTED);
     }
 
-    if let Some(code) = confirmation_exit(mode, || confirm(&targets, &skipped, opts))? {
-        eprintln!("aborted");
+    // A prompt that cannot be shown (stderr closed) is treated as declined,
+    // so nothing is killed and the run exits 1 rather than looking successful.
+    let prompt = || {
+        confirm(&targets, &skipped, opts).or_else(|e| {
+            if is_broken_pipe(&e) {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        })
+    };
+    if let Some(code) = confirmation_exit(mode, prompt)? {
+        writeln!(std::io::stderr(), "aborted").ok();
         return Ok(code);
     }
 
@@ -178,8 +188,21 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
     }
     report.extend(skipped);
 
-    print_report(&report, opts.json)?;
-    Ok(u8::from(any_failure))
+    report_then_exit(&report, opts.json, u8::from(any_failure))
+}
+
+/// Print the report and return `code`. The kills have already happened by
+/// now, so a reader that closed the pipe early (e.g. `| head -0`) must not
+/// turn a failure code into success; only other write errors propagate.
+fn report_then_exit(report: &[KillReportEntry], json: bool, code: u8) -> Result<u8> {
+    keep_code_on_closed_pipe(print_report(report, json), code)
+}
+
+fn keep_code_on_closed_pipe(printed: Result<()>, code: u8) -> Result<u8> {
+    match printed {
+        Err(e) if !is_broken_pipe(&e) => Err(e),
+        _ => Ok(code),
+    }
 }
 
 fn print_report(report: &[KillReportEntry], json: bool) -> Result<()> {
@@ -753,6 +776,32 @@ mod tests {
         let skipped = confirmation_exit(ConfirmMode::Skip, || panic!("--yes must not prompt"))
             .expect("skipping should not be a runtime error");
         assert_eq!(skipped, None, "--yes should proceed without prompting");
+    }
+
+    #[test]
+    fn closed_pipe_keeps_the_kill_exit_code() {
+        let closed = || {
+            Err(anyhow::Error::new(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe,
+            )))
+        };
+
+        assert_eq!(
+            keep_code_on_closed_pipe(closed(), 1).expect("a closed pipe is not a runtime error"),
+            1,
+            "a failed kill must still exit 1 when the reader went away"
+        );
+        assert_eq!(keep_code_on_closed_pipe(Ok(()), 0).expect("printed"), 0);
+        assert!(
+            keep_code_on_closed_pipe(
+                Err(anyhow::Error::new(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied
+                ))),
+                0
+            )
+            .is_err(),
+            "other write errors still propagate"
+        );
     }
 
     #[test]
