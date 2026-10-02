@@ -543,6 +543,7 @@ fn run(cli: Cli) -> Result<u8> {
     let collector::Collection {
         entries,
         container_error,
+        containers_truncated,
     } = collector::collect(&collector::CollectOptions {
         deep_enrichment: !cli.no_enrich,
     })?;
@@ -587,7 +588,7 @@ fn run(cli: Cli) -> Result<u8> {
     }
 
     if std::io::stderr().is_terminal() {
-        print_listing_warnings(container_error.as_ref())?;
+        print_listing_warnings(container_error.as_ref(), containers_truncated)?;
     }
 
     if !cli.json
@@ -604,12 +605,20 @@ fn run(cli: Cli) -> Result<u8> {
 }
 
 /// Print the stderr warnings that follow a listing: why container detection
-/// failed (only when the user can fix it) and missing privileges.
-fn print_listing_warnings(container_error: Option<&portlens::docker::Error>) -> Result<()> {
+/// failed (only when the user can fix it), that it dropped published ports,
+/// and missing privileges.
+fn print_listing_warnings(
+    container_error: Option<&portlens::docker::Error>,
+    containers_truncated: bool,
+) -> Result<()> {
     let mut stderr = std::io::stderr().lock();
     if let Some(hint) = container_error.and_then(collector::container_detection_hint) {
         writeln!(stderr, "warning: {hint}")
             .context("failed to write container detection warning to stderr")?;
+    }
+    if containers_truncated {
+        writeln!(stderr, "warning: {}", collector::CONTAINER_TRUNCATION_HINT)
+            .context("failed to write container truncation warning to stderr")?;
     }
     if let Some(warning) = collector::visibility_warning() {
         writeln!(stderr, "warning: {warning}")

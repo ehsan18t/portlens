@@ -86,6 +86,10 @@ pub struct Collection {
     /// Why Docker/Podman detection found no containers, when it ran and
     /// failed. `None` when it succeeded or was skipped (`--no-enrich`).
     pub container_error: Option<docker::Error>,
+    /// Whether a daemon published more ports than nanodock maps, so some rows
+    /// may be missing their container name. `false` when detection failed or
+    /// was skipped.
+    pub containers_truncated: bool,
 }
 
 /// Collect all open TCP and UDP sockets using the provided enrichment options.
@@ -145,6 +149,7 @@ pub fn collect(options: &CollectOptions) -> Result<Collection> {
     // Block on Docker results only after all other I/O is done.
     let (container_map, container_error) =
         docker_handle.map_or_else(|| (ContainerPortMap::default(), None), wait_for_containers);
+    let containers_truncated = container_map.truncated();
     let tcp_states = tcp_state::load_tcp_state_index();
     let now_epoch = current_epoch_secs();
 
@@ -175,15 +180,26 @@ pub fn collect(options: &CollectOptions) -> Result<Collection> {
     Ok(Collection {
         entries,
         container_error,
+        containers_truncated,
     })
 }
 
-/// Wait for background container detection, logging why it failed.
-fn wait_for_containers(
+/// Wait for background container detection, logging under `--trace` why it
+/// failed or that it dropped published ports.
+#[must_use]
+pub fn wait_for_containers(
     handle: docker::DetectionHandle,
 ) -> (ContainerPortMap, Option<docker::Error>) {
     match handle.wait_result() {
-        Ok(container_map) => (container_map, None),
+        Ok(container_map) => {
+            if container_map.truncated() {
+                debug!(
+                    "container detection dropped published ports past nanodock's binding cap: bindings_kept={}",
+                    container_map.len()
+                );
+            }
+            (container_map, None)
+        }
         Err(error) => {
             log_detection_error(&error);
             (ContainerPortMap::default(), Some(error))
@@ -193,7 +209,7 @@ fn wait_for_containers(
 
 /// Log a container detection failure, with its underlying cause, under
 /// `--trace`.
-pub fn log_detection_error(error: &docker::Error) {
+fn log_detection_error(error: &docker::Error) {
     match std::error::Error::source(error) {
         Some(source) => debug!("container detection failed: {error}: {source}"),
         None => debug!("container detection failed: {error}"),
@@ -214,6 +230,11 @@ pub fn container_detection_hint(error: &docker::Error) -> Option<String> {
     };
     Some(permission_denied_hint(endpoint))
 }
+
+/// The one-line hint shown when container detection dropped published
+/// ports (see [`Collection::containers_truncated`]). The text is fixed, so
+/// nothing from a daemon reaches the terminal.
+pub const CONTAINER_TRUNCATION_HINT: &str = "container detection skipped some published ports (a port range too large to map); some rows may be missing their container name";
 
 /// The hint text for a permission problem on `endpoint`, sanitized for the
 /// terminal. Split out so it can be tested without building a
@@ -348,6 +369,15 @@ mod tests {
         assert!(
             !hint.contains(['\x1b', '\x07', '\n']),
             "the endpoint must be sanitized for the terminal: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn truncation_hint_is_one_plain_line() {
+        assert!(
+            !CONTAINER_TRUNCATION_HINT.chars().any(char::is_control)
+                && CONTAINER_TRUNCATION_HINT.is_ascii(),
+            "the truncation hint must print as one plain line: {CONTAINER_TRUNCATION_HINT:?}"
         );
     }
 

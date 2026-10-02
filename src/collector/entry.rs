@@ -86,7 +86,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
 
     let app = if context.deep_enrichment {
         detect_enriched_app(
-            container.as_ref(),
+            container.as_deref(),
             project_root.as_deref(),
             &l.process.name,
             exe_name,

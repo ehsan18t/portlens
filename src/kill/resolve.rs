@@ -9,6 +9,7 @@
 //! stop the container via the daemon API rather than killing the proxy PID.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use log::debug;
@@ -83,10 +84,9 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     pids.dedup();
     let identities = snapshot_identities(&pids);
 
-    let container_map = docker_handle.wait_result().unwrap_or_else(|error| {
-        collector::log_detection_error(&error);
-        ContainerPortMap::default()
-    });
+    // A failure is logged under `--trace`; an empty map then makes every
+    // proxy target refuse instead of guessing.
+    let (container_map, _) = collector::wait_for_containers(docker_handle);
 
     let mut targets = resolve_targets_from_entries(
         entries,
@@ -203,7 +203,7 @@ fn container_target_for_entry(
     );
 
     let info = match api_match {
-        PublishedContainerMatch::Match(info) => Some(docker::ContainerInfo::clone(info)),
+        PublishedContainerMatch::Match(info) => Some(Arc::clone(info)),
         PublishedContainerMatch::Ambiguous => {
             bail!(
                 "refusing to stop proxy pid {} ({}) on port {} because multiple containers publish the same port/protocol; use 'kill --pid' to target the proxy explicitly",
@@ -219,7 +219,11 @@ fn container_target_for_entry(
     let rootless_name = exe_name
         .filter(|name| docker::is_podman_rootlessport_process(name))
         .unwrap_or(&entry.process);
-    let info = info.or_else(|| podman_rootless_resolver.lookup(entry.pid, rootless_name));
+    let info = info.or_else(|| {
+        podman_rootless_resolver
+            .lookup(entry.pid, rootless_name)
+            .map(Arc::new)
+    });
 
     let Some(info) = info else {
         bail!(
@@ -232,15 +236,14 @@ fn container_target_for_entry(
 
     // Use the container ID if available, otherwise fall back to the name.
     let api_id = if info.id.is_empty() {
-        info.name.clone()
+        &info.name
     } else {
-        info.id
+        &info.id
     };
-    let container_name = info.name;
 
     Ok(ContainerTarget {
-        container_id: api_id,
-        container_name,
+        container_id: api_id.clone(),
+        container_name: info.name.clone(),
         port: entry.port,
         proxy_pid: entry.pid,
         proxy_process: entry.process.as_ref().to_owned(),

@@ -5,6 +5,7 @@
 //! [`CollectContext`].
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::docker::{self, ContainerPortMap, ProxyFallback};
 use crate::types::Protocol;
@@ -30,6 +31,9 @@ pub fn is_container_proxy(process_name: &str, exe_name: Option<&str>) -> bool {
 /// ports reported by the daemon, then, for a rootless Podman `rootlessport`
 /// helper, through local Podman metadata (nanodock returns `None` for that
 /// step outside Linux).
+///
+/// A container from the port map is shared with the map, so a container that
+/// publishes many ports is not copied once per socket.
 pub(super) fn resolve_container(
     context: &mut CollectContext<'_>,
     socket: SocketAddr,
@@ -37,16 +41,19 @@ pub(super) fn resolve_container(
     pid: u32,
     process_name: &str,
     exe_name: Option<&str>,
-) -> Option<docker::ContainerInfo> {
+) -> Option<Arc<docker::ContainerInfo>> {
     if let Some(container) =
         lookup_container(context.container_map, socket, proto, process_name, exe_name)
     {
-        return Some(container.clone());
+        return Some(Arc::clone(container));
     }
 
     let rootless_name =
         rootless_podman_process_name(process_name, exe_name).unwrap_or(process_name);
-    context.podman_rootless_resolver.lookup(pid, rootless_name)
+    context
+        .podman_rootless_resolver
+        .lookup(pid, rootless_name)
+        .map(Arc::new)
 }
 
 fn lookup_container<'a>(
@@ -55,7 +62,7 @@ fn lookup_container<'a>(
     proto: Protocol,
     process_name: &str,
     exe_name: Option<&str>,
-) -> Option<&'a docker::ContainerInfo> {
+) -> Option<&'a Arc<docker::ContainerInfo>> {
     let fallback = if is_container_proxy(process_name, exe_name) {
         ProxyFallback::Allow
     } else {
@@ -64,7 +71,7 @@ fn lookup_container<'a>(
 
     container_map
         .lookup(socket.ip(), socket.port(), proto, fallback)
-        .container()
+        .container_arc()
 }
 
 fn rootless_podman_process_name<'a>(
@@ -101,7 +108,7 @@ mod tests {
         );
     }
 
-    fn assert_container_name(container: Option<&docker::ContainerInfo>, expected_name: &str) {
+    fn assert_container_name(container: Option<&Arc<docker::ContainerInfo>>, expected_name: &str) {
         assert_eq!(
             container.map(|info| info.name.as_str()),
             Some(expected_name)
