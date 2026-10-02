@@ -126,6 +126,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
         project: project_name,
         app,
         uptime_secs,
+        container_matched: container.is_some(),
     }
 }
 

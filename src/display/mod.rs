@@ -118,6 +118,7 @@ pub(super) fn sample_entry_for_tests() -> PortEntry {
         project: Some("my-app".to_string()),
         app: Some("Next.js".into()),
         uptime_secs: Some(3600),
+        container_matched: false,
     }
 }
 

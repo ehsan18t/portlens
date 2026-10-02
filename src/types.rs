@@ -122,6 +122,15 @@ pub struct PortEntry {
     pub app: Option<AppLabel>,
     /// Process uptime in seconds.
     pub uptime_secs: Option<u64>,
+    /// Whether container detection matched this socket to a container.
+    ///
+    /// Deduplication collapses container runtime proxy rows only when this is
+    /// set, because a project or app label alone can come from project
+    /// detection on an ordinary process that happens to share a proxy's
+    /// name. Internal to the collector, so it is never serialized and the
+    /// JSON output does not change.
+    #[serde(skip)]
+    pub container_matched: bool,
 }
 
 /// Strip a trailing `.exe` suffix from a process name (case-insensitive).

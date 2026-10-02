@@ -293,6 +293,7 @@ mod tests {
             project: None,
             app: None,
             uptime_secs: None,
+            container_matched: false,
         }
     }
 

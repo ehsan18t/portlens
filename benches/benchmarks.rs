@@ -65,6 +65,7 @@ fn make_entry(i: u16, process: Arc<str>) -> PortEntry {
             None
         },
         uptime_secs: Some(u64::from(i) * 3600),
+        container_matched: false,
     }
 }
 

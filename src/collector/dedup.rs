@@ -14,10 +14,11 @@ use log::debug;
 
 /// Key for clustering container runtime proxy entries.
 ///
-/// Proxy rows are only safe to collapse when they agree on the logical
-/// container identity attached during enrichment. Different containers can
-/// publish the same port on different host IPs, so the key must include the
-/// best-effort container labels in addition to the socket tuple.
+/// Proxy rows are only safe to collapse when they were matched to a container
+/// and agree on the logical container identity attached during enrichment.
+/// Different containers can publish the same port on different host IPs, so
+/// the key must include the best-effort container labels in addition to the
+/// socket tuple.
 type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<String>);
 
 /// Deduplicate entries that share the same user-visible logical socket.
@@ -26,8 +27,9 @@ type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<String>);
 /// for the same Docker-published port (for example `wslrelay.exe` on IPv4
 /// and `com.docker.backend.exe` on IPv4 and IPv6). This collapses repeated
 /// rows from the same PID and then removes known container runtime proxy
-/// duplicates (as recognized by [`is_container_proxy_process`]) while
-/// preserving distinct non-proxy worker processes.
+/// duplicates (as recognized by [`is_container_proxy_process`] and matched
+/// to a container, see [`PortEntry::container_matched`]) while preserving
+/// distinct non-proxy worker processes.
 pub(super) fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     let original_len = entries.len();
     let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> =
@@ -79,7 +81,7 @@ fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
 }
 
 fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
-    (is_container_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
+    is_matched_container_proxy(entry).then(|| {
         (
             entry.port,
             entry.proto,
@@ -100,7 +102,10 @@ fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
         .into_iter()
         .partition(|entry| is_container_proxy_process(&entry.process));
 
-    if !proxy_entries.iter().any(has_docker_enrichment) {
+    // A proxy-named process that no container was matched to may be a
+    // user's own program (a project or app label alone proves nothing), so
+    // the group is only pruned when a container actually stands behind it.
+    if !proxy_entries.iter().any(|entry| entry.container_matched) {
         return proxy_entries.into_iter().chain(real_entries).collect();
     }
 
@@ -111,8 +116,11 @@ fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     real_entries
 }
 
-const fn has_docker_enrichment(entry: &PortEntry) -> bool {
-    entry.project.is_some() || entry.app.is_some()
+/// Whether a row is a container runtime proxy that container detection
+/// matched to a container, which makes it a duplicate of that container's
+/// published port.
+fn is_matched_container_proxy(entry: &PortEntry) -> bool {
+    entry.container_matched && is_container_proxy_process(&entry.process)
 }
 
 /// Deduplicate repeated rows from the same process while preserving distinct PIDs.
@@ -207,6 +215,7 @@ mod tests {
             project: None,
             app: None,
             uptime_secs: None,
+            container_matched: false,
         }
     }
 
@@ -288,6 +297,7 @@ mod tests {
         ipv4.pid = 2001;
         ipv4.process = "com.docker.backend.exe".into();
         ipv4.project = Some("ecom-postgres".to_string());
+        ipv4.container_matched = true;
         ipv4.app = Some("PostgreSQL".into());
 
         let mut ipv6 = make_entry(5432, Protocol::Tcp);
@@ -295,6 +305,7 @@ mod tests {
         ipv6.pid = 2001;
         ipv6.process = "com.docker.backend.exe".into();
         ipv6.project = Some("ecom-postgres".to_string());
+        ipv6.container_matched = true;
         ipv6.app = Some("PostgreSQL".into());
 
         let mut relay = make_entry(5432, Protocol::Tcp);
@@ -302,6 +313,7 @@ mod tests {
         relay.pid = 2002;
         relay.process = "wslrelay.exe".into();
         relay.project = Some("ecom-postgres".to_string());
+        relay.container_matched = true;
         relay.app = Some("PostgreSQL".into());
 
         let result = deduplicate(vec![ipv4, ipv6, relay]);
@@ -327,6 +339,7 @@ mod tests {
         enriched.pid = 1002;
         enriched.process = "com.docker.backend.exe".into();
         enriched.project = Some("my-postgres".to_string());
+        enriched.container_matched = true;
         enriched.app = Some("PostgreSQL".into());
         enriched.uptime_secs = Some(3600);
 
@@ -347,6 +360,7 @@ mod tests {
         first.pid = 2001;
         first.process = "com.docker.backend.exe".into();
         first.project = Some("api-a".to_string());
+        first.container_matched = true;
         first.app = Some("Node.js".into());
 
         let mut second = make_entry(8080, Protocol::Tcp);
@@ -354,6 +368,7 @@ mod tests {
         second.pid = 2002;
         second.process = "com.docker.backend.exe".into();
         second.project = Some("api-b".to_string());
+        second.container_matched = true;
         second.app = Some("Node.js".into());
 
         let result = deduplicate(vec![first, second]);
@@ -403,6 +418,7 @@ mod tests {
         proxy.pid = 1001;
         proxy.process = "wslrelay.exe".into();
         proxy.project = Some("my-postgres".to_string());
+        proxy.container_matched = true;
         proxy.app = Some("PostgreSQL".into());
 
         let mut real = make_entry(5432, Protocol::Tcp);
@@ -453,8 +469,8 @@ mod tests {
         assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");
     }
 
-    /// Two rows of one proxy process on different addresses, both carrying
-    /// the same container enrichment.
+    /// Two rows of one proxy process on different addresses, both matched to
+    /// the same container.
     fn proxy_fan_out(process: &str) -> Vec<PortEntry> {
         [
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -467,6 +483,7 @@ mod tests {
             entry.pid = 3001;
             entry.process = process.into();
             entry.project = Some("shop-web-1".to_string());
+            entry.container_matched = true;
             entry.app = Some("Nginx".into());
             entry
         })
@@ -525,5 +542,51 @@ mod tests {
                 "{helper} without container enrichment must stay visible"
             );
         }
+    }
+
+    /// A user's own program that shares a proxy's name, with a project and
+    /// app found by project detection but no container behind it.
+    fn unmatched_fan_out(process: &str) -> Vec<PortEntry> {
+        proxy_fan_out(process)
+            .into_iter()
+            .map(|mut entry| {
+                entry.project = Some("my-service".to_string());
+                entry.app = Some("Rust".into());
+                entry.container_matched = false;
+                entry
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dedup_keeps_rows_of_proxy_named_process_without_container_match() {
+        for process in ["pasta", "limactl", "gvproxy", "rootlesskit", "vpnkit"] {
+            let result = deduplicate(unmatched_fan_out(process));
+            assert_eq!(
+                result.len(),
+                2,
+                "{process} with a detected project but no container match must keep both rows like any other process"
+            );
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_proxy_named_process_with_project_next_to_real_process() {
+        let mut proxy_named = make_entry(8080, Protocol::Tcp);
+        proxy_named.pid = 1001;
+        proxy_named.process = "pasta".into();
+        proxy_named.project = Some("my-service".to_string());
+        proxy_named.app = Some("Rust".into());
+
+        let mut real = make_entry(8080, Protocol::Tcp);
+        real.pid = 1002;
+        real.process = "my-app".into();
+
+        let result = deduplicate(vec![proxy_named, real]);
+        assert_eq!(
+            result.len(),
+            2,
+            "a project label without a container match must not hide either process"
+        );
     }
 }
