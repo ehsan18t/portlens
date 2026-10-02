@@ -18,8 +18,8 @@ use anyhow::{Result, bail};
 use log::debug;
 
 use self::platform::{ProcessOrigin, kill_pid, pid_exists};
-use self::report::KillReportEntry;
-use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
+use self::report::{KillReportEntry, KillStatus};
+use self::resolve::{ResolvedTarget, ResolvedTargets, Target, target_for_pid, targets_for_port};
 use crate::display::{is_broken_pipe, sanitize_for_terminal};
 use crate::filter::PortFilter;
 
@@ -54,9 +54,10 @@ const EXIT_ABORTED: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 /// Exit code when the selector matched nothing.
 const EXIT_NOTHING_TO_KILL: u8 = 3;
-/// Exit code when a `--port` selector matched only protected processes, so
-/// nothing would be (or was) signaled. Not `3`: something did match.
-const EXIT_ALL_PROTECTED: u8 = 1;
+/// Exit code when a `--port` selector matched only skipped targets (protected
+/// processes and unresolved port forwarders), so nothing would be (or was)
+/// signaled. Not `3`: something did match.
+const EXIT_ALL_SKIPPED: u8 = 1;
 
 /// How the confirmation step should behave for one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,12 +98,12 @@ fn confirmation_exit(mode: ConfirmMode, ask: impl FnOnce() -> Result<bool>) -> R
 /// Run a kill operation end-to-end.
 ///
 /// Returns `Ok(exit_code)` where:
-/// - `0`: every non-protected target succeeded (or was already gone), or a
-///   dry run with at least one target. Protected processes skipped by a
-///   `--port` selector do not count as failures.
+/// - `0`: every non-skipped target succeeded (or was already gone), or a
+///   dry run with at least one target. Protected processes and unresolved
+///   port forwarders skipped by a `--port` selector do not count as failures.
 /// - `1`: at least one target failed (permission denied, pid reused, other
-///   errors), every match of a `--port` selector was protected (also in a
-///   dry run), or the user declined the confirmation prompt.
+///   errors), every match of a `--port` selector was skipped (also in a dry
+///   run), or the user declined the confirmation prompt.
 /// - `2`: confirmation is required but stdin is not a terminal; pass `--yes`.
 ///   Checked before targets are resolved.
 /// - `3`: nothing to kill (no PID matched the selector).
@@ -127,9 +128,12 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
         return Ok(EXIT_USAGE);
     }
 
-    let targets = resolve_targets(opts)?;
+    let ResolvedTargets {
+        targets,
+        skipped: forwarders,
+    } = resolve_targets(opts)?;
 
-    if targets.is_empty() {
+    if targets.is_empty() && forwarders.is_empty() {
         debug!("no kill targets resolved for selector");
         let msg = match &opts.target {
             KillTarget::Port(f) => {
@@ -142,18 +146,20 @@ pub fn run(opts: &KillOptions) -> Result<u8> {
     }
 
     let pid_mode = matches!(opts.target, KillTarget::Pid(_));
-    let (targets, skipped) = partition_protected(targets, pid_mode, std::process::id())?;
+    let (targets, mut skipped) = partition_protected(targets, pid_mode, std::process::id())?;
+    skipped.extend(forwarders);
 
     debug!(
-        "resolved {} kill target(s), skipping {} protected",
+        "resolved {} kill target(s), skipping {}",
         targets.len(),
-        skipped.len()
+        skipped_summary(&skipped)
     );
 
     if targets.is_empty() {
-        // Only reachable in `--port` mode: `--pid` refuses a protected target.
-        eprintln!("nothing to kill: every matching process is protected");
-        return report_then_exit(&skipped, opts.json, EXIT_ALL_PROTECTED);
+        // Only reachable in `--port` mode: `--pid` refuses a protected target
+        // and never resolves a forwarder.
+        eprintln!("nothing to kill: {}", all_skipped_reason(&skipped));
+        return report_then_exit(&skipped, opts.json, EXIT_ALL_SKIPPED);
     }
 
     // A prompt that cannot be shown (stderr closed) is treated as declined,
@@ -240,12 +246,45 @@ fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
     }
 }
 
-fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
+fn resolve_targets(opts: &KillOptions) -> Result<ResolvedTargets> {
     // Note: `--port 0` is rejected at CLI-parse time so it produces a usage
     // exit code (2); callers here can rely on `port >= 1`.
     match &opts.target {
         KillTarget::Port(filter) => targets_for_port(*filter),
-        KillTarget::Pid(pid) => Ok(resolve_pid_target(*pid).into_iter().collect()),
+        KillTarget::Pid(pid) => Ok(ResolvedTargets {
+            targets: resolve_pid_target(*pid).into_iter().collect(),
+            skipped: Vec::new(),
+        }),
+    }
+}
+
+/// Count skipped rows as `(protected processes, port forwarders)`.
+fn count_skipped_kinds(skipped: &[KillReportEntry]) -> (usize, usize) {
+    let forwarders = skipped
+        .iter()
+        .filter(|entry| entry.status == KillStatus::Forwarder)
+        .count();
+    (skipped.len() - forwarders, forwarders)
+}
+
+/// Describe the skipped rows for a heading, for example
+/// `2 protected process(es) and 1 unresolved port forwarder(s)`.
+fn skipped_summary(skipped: &[KillReportEntry]) -> String {
+    match count_skipped_kinds(skipped) {
+        (protected, 0) => format!("{protected} protected process(es)"),
+        (0, forwarders) => format!("{forwarders} unresolved port forwarder(s)"),
+        (protected, forwarders) => format!(
+            "{protected} protected process(es) and {forwarders} unresolved port forwarder(s)"
+        ),
+    }
+}
+
+/// Why nothing is left to kill when every match was skipped.
+fn all_skipped_reason(skipped: &[KillReportEntry]) -> &'static str {
+    match count_skipped_kinds(skipped) {
+        (_, 0) => "every matching process is protected",
+        (0, _) => "every matching process is a port forwarder with no matching container",
+        _ => "every matching process is protected or a port forwarder with no matching container",
     }
 }
 
@@ -506,11 +545,7 @@ fn announce_dry_run(
         write_target_line(&mut out, t)?;
     }
     if !skipped.is_empty() {
-        writeln!(
-            out,
-            "dry-run: skipping {} protected process(es):",
-            skipped.len()
-        )?;
+        writeln!(out, "dry-run: skipping {}:", skipped_summary(skipped))?;
         write_skipped_lines(&mut out, skipped)?;
     }
     Ok(())
@@ -575,7 +610,7 @@ fn confirm(
         write_target_line(&mut err, t)?;
     }
     if !skipped.is_empty() {
-        writeln!(err, "skipping {} protected process(es):", skipped.len())?;
+        writeln!(err, "skipping {}:", skipped_summary(skipped))?;
         write_skipped_lines(&mut err, skipped)?;
     }
     write!(err, "proceed? [y/N] ")?;
@@ -1157,5 +1192,31 @@ mod tests {
         let (n_proc, n_ctr) = count_target_kinds(&targets);
         assert_eq!(n_proc, 2, "should count 2 process targets");
         assert_eq!(n_ctr, 1, "should count 1 container target");
+    }
+
+    #[test]
+    fn skipped_wording_names_each_kind() {
+        let protected = || KillReportEntry::from_protected(4, "System".into(), "reason".into());
+        let forwarder =
+            || KillReportEntry::from_forwarder(9, "gvproxy".into(), 8080, "reason".into());
+
+        assert_eq!(skipped_summary(&[protected()]), "1 protected process(es)");
+        assert_eq!(
+            all_skipped_reason(&[protected()]),
+            "every matching process is protected",
+            "the protected-only wording must not change"
+        );
+        assert_eq!(
+            skipped_summary(&[forwarder(), forwarder()]),
+            "2 unresolved port forwarder(s)"
+        );
+        assert_eq!(
+            skipped_summary(&[protected(), forwarder()]),
+            "1 protected process(es) and 1 unresolved port forwarder(s)"
+        );
+        assert!(
+            all_skipped_reason(&[forwarder()]).contains("port forwarder"),
+            "a forwarder-only run should say why nothing was killed"
+        );
     }
 }

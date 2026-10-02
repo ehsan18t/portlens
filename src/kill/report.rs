@@ -38,6 +38,11 @@ pub enum KillStatus {
     /// without being signaled. Not a failure on its own.
     #[serde(rename = "protected")]
     Protected,
+    /// A container runtime or VM/WSL port forwarder matched a `--port`
+    /// selector but no single container could be matched to the port, so it
+    /// was skipped without being signaled. Not a failure on its own.
+    #[serde(rename = "forwarder")]
+    Forwarder,
     /// Dry-run: process would be killed (graceful).
     #[serde(rename = "would-kill")]
     WouldKill,
@@ -94,7 +99,8 @@ pub struct KillReportEntry {
     /// Container name, present only for container targets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
-    /// Port being freed, present only for container targets.
+    /// Port being freed, present only for container targets and skipped
+    /// port forwarders.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }
@@ -160,6 +166,22 @@ impl KillReportEntry {
             container_id: None,
             container_name: None,
             port: None,
+        }
+    }
+
+    /// Build a report row for a port forwarder on `port` that was skipped
+    /// because no single container could be matched to it; the reason is
+    /// carried in `hint`.
+    #[must_use]
+    pub const fn from_forwarder(pid: u32, process: String, port: u16, reason: String) -> Self {
+        Self {
+            pid,
+            process,
+            status: KillStatus::Forwarder,
+            hint: Some(reason),
+            container_id: None,
+            container_name: None,
+            port: Some(port),
         }
     }
 
@@ -314,6 +336,16 @@ pub fn format_process_line(e: &KillReportEntry) -> String {
             e.pid,
             e.process,
             e.hint.as_deref().unwrap_or("protected process")
+        ),
+        KillStatus::Forwarder => format!(
+            "skipped pid {} ({}) on port {}: {}",
+            e.pid,
+            e.process,
+            e.port
+                .map_or_else(|| "?".to_owned(), |port| port.to_string()),
+            e.hint
+                .as_deref()
+                .unwrap_or("port forwarder with no matching container")
         ),
         _ => format!("pid {} ({}): {:?}", e.pid, e.process, e.status),
     }
@@ -510,6 +542,30 @@ mod tests {
         assert_eq!(
             format_process_line(&entry),
             "skipped pid 812 (lsass.exe): critical operating system process 'lsass.exe'"
+        );
+    }
+
+    #[test]
+    fn forwarder_entry_is_skipped_not_failed() {
+        let entry = KillReportEntry::from_forwarder(
+            913,
+            "limactl".to_string(),
+            8080,
+            "port forwarder with no matching container".to_string(),
+        );
+        assert_eq!(entry.status, KillStatus::Forwarder);
+        assert!(
+            !entry.is_failure(),
+            "skipping an unresolved forwarder is not a kill failure"
+        );
+        assert_eq!(
+            serde_json::to_value(&entry).expect("entry should serialize")["status"],
+            serde_json::json!("forwarder"),
+            "JSON status token should be stable"
+        );
+        assert_eq!(
+            format_process_line(&entry),
+            "skipped pid 913 (limactl) on port 8080: port forwarder with no matching container"
         );
     }
 

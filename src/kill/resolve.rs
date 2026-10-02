@@ -7,16 +7,18 @@
 //! When a port is owned by a Docker/Podman container, the resolver creates
 //! a [`ContainerTarget`] instead of a process target so the kill flow can
 //! stop the container via the daemon API rather than killing the proxy PID.
+//! A container runtime or VM/WSL port forwarder that no single container can
+//! be matched to is skipped with a `forwarder` report row instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use log::debug;
 
 use super::platform::{ProcessIdentity, snapshot_identities};
+use super::report::KillReportEntry;
 use crate::collector::{self, CollectOptions};
-use crate::display::sanitize_for_terminal;
 use crate::docker::{self, ContainerPortMap, ProxyFallback, PublishedContainerMatch};
 use crate::filter::PortFilter;
 use crate::types::{PortEntry, Protocol, State};
@@ -57,14 +59,28 @@ pub enum ResolvedTarget {
     Container(ContainerTarget),
 }
 
+/// Targets of a kill request, plus the matching listeners that were skipped
+/// because they cannot be acted on safely.
+#[derive(Debug, Default)]
+pub struct ResolvedTargets {
+    /// Processes to signal and containers to stop.
+    pub targets: Vec<ResolvedTarget>,
+    /// Port forwarders left alone because no single container could be
+    /// matched to them, as `forwarder` report rows.
+    pub skipped: Vec<KillReportEntry>,
+}
+
 /// Enumerate targets owning sockets on `port`.
 ///
 /// Runs Docker/Podman detection in parallel with port enumeration. When
 /// the matching entry is a known container runtime proxy (by process or
 /// executable name) and the daemon reports a container for that port, the
-/// resolver yields a [`ContainerTarget`]. Otherwise it produces a regular
-/// process [`Target`].
-pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
+/// resolver yields a [`ContainerTarget`]. A proxy no single container can be
+/// matched to is skipped (see [`ResolvedTargets::skipped`]): it may be a
+/// Lima, Podman machine or WSL forwarder for a port no container publishes,
+/// and signaling it could cut off the runtime or VM. Any other entry produces
+/// a regular process [`Target`].
+pub fn targets_for_port(filter: PortFilter) -> Result<ResolvedTargets> {
     // Start Docker detection early so it overlaps with socket enumeration.
     let home = what_stack::home_dir();
     let docker_handle = docker::Client::new().home(home.clone()).start_detection();
@@ -88,15 +104,15 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // proxy target refuse instead of guessing.
     let (container_map, _) = collector::wait_for_containers(docker_handle);
 
-    let mut targets = resolve_targets_from_entries(
+    let mut resolved = resolve_targets_from_entries(
         entries,
         filter,
         &container_map,
         &identities,
         &mut docker::RootlessPodmanResolver::new().home(home),
-    )?;
-    attach_identities(&mut targets, &identities);
-    Ok(targets)
+    );
+    attach_identities(&mut resolved.targets, &identities);
+    Ok(resolved)
 }
 
 /// Attach the resolve-time identity of every process target so the kill
@@ -114,7 +130,10 @@ fn attach_identities(targets: &mut [ResolvedTarget], identities: &HashMap<u32, P
 struct TargetSet {
     seen_pids: HashSet<u32>,
     seen_containers: HashSet<String>,
-    targets: Vec<ResolvedTarget>,
+    /// `(pid, port)` of forwarders already skipped, so the IPv4 and IPv6
+    /// sockets of one forwarded port give a single report row.
+    seen_forwarders: HashSet<(u32, u16)>,
+    resolved: ResolvedTargets,
 }
 
 fn resolve_targets_from_entries(
@@ -123,7 +142,7 @@ fn resolve_targets_from_entries(
     container_map: &ContainerPortMap,
     identities: &HashMap<u32, ProcessIdentity>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-) -> Result<Vec<ResolvedTarget>> {
+) -> ResolvedTargets {
     let mut set = TargetSet::default();
 
     for entry in entries {
@@ -141,10 +160,10 @@ fn resolve_targets_from_entries(
             container_map,
             &mut set,
             podman_rootless_resolver,
-        )?;
+        );
     }
 
-    Ok(set.targets)
+    set.resolved
 }
 
 fn append_target_from_entry(
@@ -153,35 +172,49 @@ fn append_target_from_entry(
     container_map: &ContainerPortMap,
     set: &mut TargetSet,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-) -> Result<()> {
+) {
     // Known proxy/helper processes can multiplex multiple published ports on a
     // single PID, so container dedup must happen after proxy resolution.
     if collector::is_container_proxy(&entry.process, exe_name) {
-        let ct =
-            container_target_for_entry(container_map, entry, exe_name, podman_rootless_resolver)?;
-
-        if set.seen_containers.insert(ct.container_id.clone()) {
-            debug!(
-                "resolved port {} to container '{}' (proxy pid {})",
-                entry.port, ct.container_name, ct.proxy_pid
-            );
-            set.targets.push(ResolvedTarget::Container(ct));
+        match container_target_for_entry(container_map, entry, exe_name, podman_rootless_resolver) {
+            Ok(ct) => {
+                if set.seen_containers.insert(ct.container_id.clone()) {
+                    debug!(
+                        "resolved port {} to container '{}' (proxy pid {})",
+                        entry.port, ct.container_name, ct.proxy_pid
+                    );
+                    set.resolved.targets.push(ResolvedTarget::Container(ct));
+                }
+            }
+            // Skipped like a protected process, so one forwarder does not
+            // abort the rest of a `--port` range.
+            Err(reason) => {
+                if set.seen_forwarders.insert((entry.pid, entry.port)) {
+                    debug!(
+                        "skipping port forwarder pid {} on port {}: {reason}",
+                        entry.pid, entry.port
+                    );
+                    set.resolved.skipped.push(KillReportEntry::from_forwarder(
+                        entry.pid,
+                        entry.process.as_ref().to_owned(),
+                        entry.port,
+                        reason,
+                    ));
+                }
+            }
         }
-
-        return Ok(());
+        return;
     }
 
     // Non-proxy processes can own multiple matching sockets, but signaling the
     // same PID more than once is redundant.
     if set.seen_pids.insert(entry.pid) {
-        set.targets.push(ResolvedTarget::Process(Target {
+        set.resolved.targets.push(ResolvedTarget::Process(Target {
             pid: entry.pid,
             process: entry.process.as_ref().to_owned(),
             identity: None,
         }));
     }
-
-    Ok(())
 }
 
 fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
@@ -189,12 +222,16 @@ fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
 }
 
 /// Resolve a proxy/helper entry to a unique container target.
+///
+/// Returns why the entry must be left alone when no single container can be
+/// matched to it. The reason follows the `skipped pid N (name) on port P:`
+/// prefix of the report line, so it does not repeat the process or port.
 fn container_target_for_entry(
     map: &ContainerPortMap,
     entry: &PortEntry,
     exe_name: Option<&str>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-) -> Result<ContainerTarget> {
+) -> Result<ContainerTarget, String> {
     let api_match = map.lookup(
         entry.local_addr,
         entry.port,
@@ -205,12 +242,10 @@ fn container_target_for_entry(
     let info = match api_match {
         PublishedContainerMatch::Match(info) => Some(Arc::clone(info)),
         PublishedContainerMatch::Ambiguous => {
-            bail!(
-                "refusing to stop proxy pid {} ({}) on port {} because multiple containers publish the same port/protocol; use 'kill --pid' to target the proxy explicitly",
-                entry.pid,
-                sanitize_for_terminal(entry.process.as_ref()),
-                entry.port
-            );
+            return Err(format!(
+                "container runtime port forwarder for several containers that publish this port and protocol, so the container to stop is unclear; use 'kill --pid {}' to signal the forwarder itself",
+                entry.pid
+            ));
         }
         _ => None,
     };
@@ -226,12 +261,10 @@ fn container_target_for_entry(
     });
 
     let Some(info) = info else {
-        bail!(
-            "refusing to kill proxy pid {} ({}) on port {} because the container could not be resolved; ensure the container runtime daemon is reachable or use 'kill --pid' to target the proxy explicitly",
-            entry.pid,
-            sanitize_for_terminal(entry.process.as_ref()),
-            entry.port
-        );
+        return Err(format!(
+            "container runtime or VM/WSL port forwarder with no matching container; it may be forwarding a port that no container publishes, and signaling it could cut off the runtime or VM; use 'kill --pid {}' if you really mean to signal it",
+            entry.pid
+        ));
     };
 
     // Use the container ID if available, otherwise fall back to the name.
@@ -345,8 +378,13 @@ mod tests {
         .expect_err("unresolved proxy ports must not fall back to killing the proxy pid");
 
         assert!(
-            format!("{error:#}").contains("refusing to kill proxy pid"),
-            "port-based kill should refuse unresolved container proxies"
+            error.contains("port forwarder with no matching container")
+                && error.contains("'kill --pid 4242'"),
+            "the skip reason should name the forwarder case and the --pid escape hatch: {error}"
+        );
+        assert!(
+            !error.contains("daemon is reachable"),
+            "a forwarder for a port no container publishes is not a daemon problem: {error}"
         );
     }
 
@@ -360,10 +398,9 @@ mod tests {
             &mut no_home_resolver(),
         )
         .expect_err("unresolved proxy ports must be refused");
-        let message = format!("{error:#}");
         assert!(
-            !message.contains(['\x1b', '\x07']),
-            "process names in errors must be sanitized: {message:?}"
+            !error.contains(['\x1b', '\x07']),
+            "skip reasons must not carry raw process names: {error:?}"
         );
     }
 
@@ -395,8 +432,8 @@ mod tests {
             .expect_err("ambiguous proxy mappings must not pick an arbitrary container");
 
         assert!(
-            format!("{error:#}").contains("multiple containers publish the same port/protocol"),
-            "ambiguous proxy matches should be rejected explicitly"
+            error.contains("several containers that publish this port and protocol"),
+            "ambiguous proxy matches should be rejected explicitly: {error}"
         );
     }
 
@@ -461,7 +498,7 @@ mod tests {
             &HashMap::new(),
             &mut no_home_resolver(),
         )
-        .expect("shared proxy pids should still resolve each container target");
+        .targets;
 
         assert_eq!(
             targets.len(),
@@ -496,7 +533,7 @@ mod tests {
             &HashMap::new(),
             &mut no_home_resolver(),
         )
-        .expect("non-proxy pid dedup should stay intact");
+        .targets;
 
         assert_eq!(
             targets.len(),
@@ -543,7 +580,7 @@ mod tests {
             &identities,
             &mut no_home_resolver(),
         )
-        .expect("a proxy known by its executable name should resolve");
+        .targets;
 
         assert!(
             matches!(
@@ -552,5 +589,43 @@ mod tests {
             ),
             "the listing and kill must agree that this row is a container: {targets:?}"
         );
+    }
+
+    #[test]
+    fn resolve_targets_from_entries_skips_unresolved_forwarder_in_range() {
+        let mut forwarder_v4 = make_entry(8080, Protocol::Tcp, State::Listen, "limactl");
+        forwarder_v4.pid = 7200;
+        forwarder_v4.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let mut forwarder_v6 = forwarder_v4.clone();
+        forwarder_v6.local_addr = IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED);
+        let node = make_entry(3000, Protocol::Tcp, State::Listen, "node");
+
+        let resolved = resolve_targets_from_entries(
+            vec![forwarder_v4, forwarder_v6, node],
+            PortFilter::Range {
+                start: 3000,
+                end: 9000,
+            },
+            &ContainerPortMap::default(),
+            &HashMap::new(),
+            &mut no_home_resolver(),
+        );
+
+        assert!(
+            matches!(
+                resolved.targets.as_slice(),
+                [ResolvedTarget::Process(Target { pid: 4242, .. })]
+            ),
+            "the rest of the range must still resolve: {:?}",
+            resolved.targets
+        );
+        assert_eq!(
+            resolved.skipped.len(),
+            1,
+            "both sockets of one forwarded port should give one skipped row"
+        );
+        let skipped = &resolved.skipped[0];
+        assert_eq!(skipped.status, super::super::report::KillStatus::Forwarder);
+        assert_eq!((skipped.pid, skipped.port), (7200, Some(8080)));
     }
 }
