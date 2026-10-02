@@ -107,8 +107,8 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 /// probing, project-root walking, config-file scanning, and command-line path
 /// fallback. Core socket, PID, user, uptime, and process-name detection remain.
 pub fn collect(options: &CollectOptions) -> Result<Collection> {
-    // Resolve the home directory once so Docker/Podman probing and
-    // project-root detection share the same ceiling.
+    // Resolve the home directory once so Docker/Podman probing, the rootless
+    // Podman resolver, and project-root detection share the same ceiling.
     let home = if options.deep_enrichment {
         what_stack::home_dir()
     } else {
