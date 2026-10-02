@@ -65,9 +65,8 @@ pub enum ResolvedTarget {
 /// process [`Target`].
 pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // Start Docker detection early so it overlaps with socket enumeration.
-    let docker_handle = docker::Client::new()
-        .home(what_stack::home_dir())
-        .start_detection();
+    let home = what_stack::home_dir();
+    let docker_handle = docker::Client::new().home(home.clone()).start_detection();
 
     let entries = collector::collect_with_options(&CollectOptions {
         deep_enrichment: false,
@@ -94,8 +93,7 @@ pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
         filter,
         &container_map,
         &identities,
-        &mut docker::RootlessPodmanResolver::default(),
-        what_stack::home_dir().as_deref(),
+        &mut docker::RootlessPodmanResolver::new().home(home),
     )?;
     attach_identities(&mut targets, &identities);
     Ok(targets)
@@ -125,7 +123,6 @@ fn resolve_targets_from_entries(
     container_map: &ContainerPortMap,
     identities: &HashMap<u32, ProcessIdentity>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-    home: Option<&std::path::Path>,
 ) -> Result<Vec<ResolvedTarget>> {
     let mut set = TargetSet::default();
 
@@ -144,7 +141,6 @@ fn resolve_targets_from_entries(
             container_map,
             &mut set,
             podman_rootless_resolver,
-            home,
         )?;
     }
 
@@ -157,18 +153,12 @@ fn append_target_from_entry(
     container_map: &ContainerPortMap,
     set: &mut TargetSet,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-    home: Option<&std::path::Path>,
 ) -> Result<()> {
     // Known proxy/helper processes can multiplex multiple published ports on a
     // single PID, so container dedup must happen after proxy resolution.
     if collector::is_container_proxy(&entry.process, exe_name) {
-        let ct = container_target_for_entry(
-            container_map,
-            entry,
-            exe_name,
-            podman_rootless_resolver,
-            home,
-        )?;
+        let ct =
+            container_target_for_entry(container_map, entry, exe_name, podman_rootless_resolver)?;
 
         if set.seen_containers.insert(ct.container_id.clone()) {
             debug!(
@@ -204,7 +194,6 @@ fn container_target_for_entry(
     entry: &PortEntry,
     exe_name: Option<&str>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
-    home: Option<&std::path::Path>,
 ) -> Result<ContainerTarget> {
     let api_match = map.lookup(
         entry.local_addr,
@@ -230,14 +219,7 @@ fn container_target_for_entry(
     let rootless_name = exe_name
         .filter(|name| docker::is_podman_rootlessport_process(name))
         .unwrap_or(&entry.process);
-    let info = info.or_else(|| {
-        docker::lookup_rootless_podman_container(
-            entry.pid,
-            rootless_name,
-            podman_rootless_resolver,
-            home,
-        )
-    });
+    let info = info.or_else(|| podman_rootless_resolver.lookup(entry.pid, rootless_name));
 
     let Some(info) = info else {
         bail!(
@@ -289,6 +271,12 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
+
+    /// A resolver that never reads the test machine's rootless Podman
+    /// storage below its home directory.
+    fn no_home_resolver() -> docker::RootlessPodmanResolver {
+        docker::RootlessPodmanResolver::new().home(None)
+    }
 
     fn make_entry(port: u16, proto: Protocol, state: State, process: &str) -> PortEntry {
         PortEntry {
@@ -348,8 +336,7 @@ mod tests {
             &ContainerPortMap::default(),
             &entry,
             None,
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
+            &mut no_home_resolver(),
         )
         .expect_err("unresolved proxy ports must not fall back to killing the proxy pid");
 
@@ -366,8 +353,7 @@ mod tests {
             &ContainerPortMap::default(),
             &entry,
             None,
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
+            &mut no_home_resolver(),
         )
         .expect_err("unresolved proxy ports must be refused");
         let message = format!("{error:#}");
@@ -401,14 +387,8 @@ mod tests {
             "node:22",
         );
 
-        let error = container_target_for_entry(
-            &map,
-            &entry,
-            None,
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
-        )
-        .expect_err("ambiguous proxy mappings must not pick an arbitrary container");
+        let error = container_target_for_entry(&map, &entry, None, &mut no_home_resolver())
+            .expect_err("ambiguous proxy mappings must not pick an arbitrary container");
 
         assert!(
             format!("{error:#}").contains("multiple containers publish the same port/protocol"),
@@ -475,8 +455,7 @@ mod tests {
             },
             &map,
             &HashMap::new(),
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
+            &mut no_home_resolver(),
         )
         .expect("shared proxy pids should still resolve each container target");
 
@@ -511,8 +490,7 @@ mod tests {
             },
             &ContainerPortMap::default(),
             &HashMap::new(),
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
+            &mut no_home_resolver(),
         )
         .expect("non-proxy pid dedup should stay intact");
 
@@ -559,8 +537,7 @@ mod tests {
             PortFilter::Single(5432),
             &map,
             &identities,
-            &mut docker::RootlessPodmanResolver::default(),
-            None,
+            &mut no_home_resolver(),
         )
         .expect("a proxy known by its executable name should resolve");
 

@@ -60,7 +60,6 @@ pub(in crate::collector) struct CollectContext<'a> {
     pub(in crate::collector) deep_enrichment: bool,
     pub(in crate::collector) stack_detector: &'a mut what_stack::StackDetector,
     pub(in crate::collector) process_names: &'a mut HashSet<Arc<str>>,
-    pub(in crate::collector) home: Option<&'a std::path::Path>,
     pub(in crate::collector) podman_rootless_resolver: &'a mut docker::RootlessPodmanResolver,
 }
 
@@ -150,11 +149,9 @@ pub fn collect(options: &CollectOptions) -> Result<Collection> {
     let now_epoch = current_epoch_secs();
 
     let mut process_names: HashSet<Arc<str>> = HashSet::new();
-    let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
-
-    // Rootless Podman lookup needs its own copy of the home ceiling because
-    // the stack detector takes ownership of it.
-    let podman_home = home.clone();
+    // One resolver per scan: it caches Podman storage and per-PID answers
+    // and never refreshes them on its own.
+    let mut podman_rootless_resolver = docker::RootlessPodmanResolver::new().home(home.clone());
     let mut stack_detector = what_stack::StackDetector::with_home(home);
     let mut context = CollectContext {
         sys: &sys,
@@ -165,7 +162,6 @@ pub fn collect(options: &CollectOptions) -> Result<Collection> {
         deep_enrichment: options.deep_enrichment,
         stack_detector: &mut stack_detector,
         process_names: &mut process_names,
-        home: podman_home.as_deref(),
         podman_rootless_resolver: &mut podman_rootless_resolver,
     };
 

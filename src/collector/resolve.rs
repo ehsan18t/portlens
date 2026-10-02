@@ -46,12 +46,7 @@ pub(super) fn resolve_container(
 
     let rootless_name =
         rootless_podman_process_name(process_name, exe_name).unwrap_or(process_name);
-    docker::lookup_rootless_podman_container(
-        pid,
-        rootless_name,
-        context.podman_rootless_resolver,
-        context.home,
-    )
+    context.podman_rootless_resolver.lookup(pid, rootless_name)
 }
 
 fn lookup_container<'a>(

@@ -197,7 +197,7 @@ impl KillReportEntry {
             process: ct.proxy_process,
             status,
             hint,
-            container_id: Some(crate::docker::short_container_id(&ct.container_id)),
+            container_id: Some(crate::docker::short_container_id(&ct.container_id).to_owned()),
             container_name: Some(ct.container_name),
             port: Some(ct.port),
         }
@@ -216,7 +216,7 @@ impl KillReportEntry {
             process: ct.proxy_process.clone(),
             status,
             hint: None,
-            container_id: Some(crate::docker::short_container_id(&ct.container_id)),
+            container_id: Some(crate::docker::short_container_id(&ct.container_id).to_owned()),
             container_name: Some(ct.container_name.clone()),
             port: Some(ct.port),
         }
