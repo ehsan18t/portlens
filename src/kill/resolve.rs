@@ -101,13 +101,19 @@ pub fn targets_for_port(filter: PortFilter) -> Result<ResolvedTargets> {
     let identities = snapshot_identities(&pids);
 
     // A failure is logged under `--trace`; an empty map then makes every
-    // proxy target refuse instead of guessing.
-    let (container_map, _) = collector::wait_for_containers(docker_handle);
+    // proxy target skip instead of guessing. A failure the user can fix (a
+    // permission problem) is named in each skip reason, because it, not the
+    // forwarder, is then the likely cause.
+    let (container_map, detection_error) = collector::wait_for_containers(docker_handle);
+    let detection_hint = detection_error
+        .as_ref()
+        .and_then(collector::container_detection_hint);
 
     let mut resolved = resolve_targets_from_entries(
         entries,
         filter,
         &container_map,
+        detection_hint.as_deref(),
         &identities,
         &mut docker::RootlessPodmanResolver::new().home(home),
     );
@@ -140,6 +146,7 @@ fn resolve_targets_from_entries(
     entries: Vec<PortEntry>,
     filter: PortFilter,
     container_map: &ContainerPortMap,
+    detection_hint: Option<&str>,
     identities: &HashMap<u32, ProcessIdentity>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
 ) -> ResolvedTargets {
@@ -158,6 +165,7 @@ fn resolve_targets_from_entries(
             &entry,
             exe_name,
             container_map,
+            detection_hint,
             &mut set,
             podman_rootless_resolver,
         );
@@ -170,13 +178,20 @@ fn append_target_from_entry(
     entry: &PortEntry,
     exe_name: Option<&str>,
     container_map: &ContainerPortMap,
+    detection_hint: Option<&str>,
     set: &mut TargetSet,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
 ) {
     // Known proxy/helper processes can multiplex multiple published ports on a
     // single PID, so container dedup must happen after proxy resolution.
     if collector::is_container_proxy(&entry.process, exe_name) {
-        match container_target_for_entry(container_map, entry, exe_name, podman_rootless_resolver) {
+        match container_target_for_entry(
+            container_map,
+            entry,
+            exe_name,
+            detection_hint,
+            podman_rootless_resolver,
+        ) {
             Ok(ct) => {
                 if set.seen_containers.insert(ct.container_id.clone()) {
                     debug!(
@@ -226,10 +241,13 @@ fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
 /// Returns why the entry must be left alone when no single container can be
 /// matched to it. The reason follows the `skipped pid N (name) on port P:`
 /// prefix of the report line, so it does not repeat the process or port.
+/// `detection_hint` is the sanitized hint for a container detection failure
+/// the user can fix, appended when no container could be matched.
 fn container_target_for_entry(
     map: &ContainerPortMap,
     entry: &PortEntry,
     exe_name: Option<&str>,
+    detection_hint: Option<&str>,
     podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
 ) -> Result<ContainerTarget, String> {
     let api_match = map.lookup(
@@ -261,10 +279,15 @@ fn container_target_for_entry(
     });
 
     let Some(info) = info else {
-        return Err(format!(
+        let mut reason = format!(
             "container runtime or VM/WSL port forwarder with no matching container; it may be forwarding a port that no container publishes, and signaling it could cut off the runtime or VM; use 'kill --pid {}' if you really mean to signal it",
             entry.pid
-        ));
+        );
+        if let Some(hint) = detection_hint {
+            reason.push_str("; ");
+            reason.push_str(hint);
+        }
+        return Err(reason);
     };
 
     // Use the container ID if available, otherwise fall back to the name.
@@ -373,6 +396,7 @@ mod tests {
             &ContainerPortMap::default(),
             &entry,
             None,
+            None,
             &mut no_home_resolver(),
         )
         .expect_err("unresolved proxy ports must not fall back to killing the proxy pid");
@@ -389,11 +413,31 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_proxy_reason_names_the_detection_failure() {
+        let entry = make_entry(5432, Protocol::Tcp, State::Listen, "docker-proxy");
+        let hint = "container detection skipped: permission denied on /var/run/docker.sock (add your user to the docker group or run with sudo)";
+        let reason = container_target_for_entry(
+            &ContainerPortMap::default(),
+            &entry,
+            None,
+            Some(hint),
+            &mut no_home_resolver(),
+        )
+        .expect_err("an empty map must not resolve a container");
+
+        assert!(
+            reason.ends_with(&format!("; {hint}")),
+            "a permission problem should be named in the skip reason: {reason}"
+        );
+    }
+
+    #[test]
     fn container_target_errors_sanitize_process_names() {
         let entry = make_entry(5432, Protocol::Tcp, State::Listen, "proxy\x1b]0;pwned\x07");
         let error = container_target_for_entry(
             &ContainerPortMap::default(),
             &entry,
+            None,
             None,
             &mut no_home_resolver(),
         )
@@ -428,7 +472,7 @@ mod tests {
             "node:22",
         );
 
-        let error = container_target_for_entry(&map, &entry, None, &mut no_home_resolver())
+        let error = container_target_for_entry(&map, &entry, None, None, &mut no_home_resolver())
             .expect_err("ambiguous proxy mappings must not pick an arbitrary container");
 
         assert!(
@@ -495,6 +539,7 @@ mod tests {
                 end: 4000,
             },
             &map,
+            None,
             &HashMap::new(),
             &mut no_home_resolver(),
         )
@@ -530,6 +575,7 @@ mod tests {
                 end: 4000,
             },
             &ContainerPortMap::default(),
+            None,
             &HashMap::new(),
             &mut no_home_resolver(),
         )
@@ -577,6 +623,7 @@ mod tests {
             vec![entry],
             PortFilter::Single(5432),
             &map,
+            None,
             &identities,
             &mut no_home_resolver(),
         )
@@ -607,6 +654,7 @@ mod tests {
                 end: 9000,
             },
             &ContainerPortMap::default(),
+            None,
             &HashMap::new(),
             &mut no_home_resolver(),
         );
