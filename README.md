@@ -254,16 +254,16 @@ To verify a download manually, run `sha256sum -c SHA256SUMS --ignore-missing` in
 
 Default columns:
 
-| Column  | Description                                              |
-| ------- | -------------------------------------------------------- |
-| PORT    | Local port number                                        |
-| PROTO   | Protocol: TCP or UDP                                     |
-| ADDRESS | Local bind IP address                                    |
-| PROCESS | Process executable name                                  |
-| PID     | Process identifier                                       |
-| PROJECT | Project directory name or Docker container name          |
-| APP     | Detected app/framework (e.g. Next.js, PostgreSQL, Redis) |
-| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h 15m)                  |
+| Column  | Description                                                                                                              |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| PORT    | Local port number                                                                                                        |
+| PROTO   | Protocol: TCP or UDP                                                                                                     |
+| ADDRESS | Local bind IP address                                                                                                    |
+| PROCESS | Process executable name                                                                                                  |
+| PID     | Process identifier                                                                                                       |
+| PROJECT | Project directory name or Docker container name                                                                          |
+| APP     | Detected app/framework (e.g. Next.js, Express, NestJS, Spring Boot, Laravel, Symfony, Rails, Phoenix, PostgreSQL, Redis) |
+| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h 15m)                                                                                  |
 
 Additional columns with `--full`:
 
@@ -320,7 +320,7 @@ based on available width.
 
 **App/framework detection:** Identifies the technology behind a port using three strategies (in priority order):
 1. Docker/Podman image name (e.g. `postgres:16` -> PostgreSQL)
-2. Config files in the project root when the listener is a known runtime or a project-owned executable (e.g. `next.config.mjs` -> Next.js)
+2. Config files in the project root when the listener is a known runtime or a project-owned executable (e.g. `next.config.mjs` -> Next.js, `express` in the `package.json` dependencies -> Express, a `pom.xml` that uses `org.springframework.boot` -> Spring Boot, `mix.exs` depending on `:phoenix` -> Phoenix)
 3. Process executable name (e.g. `nginx` -> Nginx)
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
