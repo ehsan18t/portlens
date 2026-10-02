@@ -135,7 +135,6 @@ src/
   collector/     — socket enumeration, deduplication, and enrichment
   filter.rs      — user-specified and relevance filtering logic
   display/       — table, JSON, terminal-width, and tips rendering
-  docker/        — Docker/Podman daemon transport and port matching
   kill/          — process/container target resolution and termination
   update.rs      — GitHub release checking and self-update logic
 ```
@@ -146,7 +145,7 @@ src/
   metadata lookup. No unrelated module should duplicate that work.
 - `filter.rs` owns all filtering logic.
 - The `display/` module owns all rendering logic.
-- The `docker/` module owns container daemon communication and port matching.
+- The sibling `nanodock` crate, re-exported as `portlens::docker`, owns container daemon communication, port matching, and the list of container runtime proxy processes.
 - The sibling `what-stack` crate provides best-effort project and stack
   enrichment.
 - The `kill/` module owns target resolution and termination flows.

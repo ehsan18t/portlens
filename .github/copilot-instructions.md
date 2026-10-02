@@ -57,11 +57,8 @@ src/
    collector/     — socket enumeration, deduplication, user/process enrichment
   filter.rs      — applies user-specified filters before display
    display/       — table, JSON, terminal-width, and tips rendering
-   docker/        — Docker/Podman daemon transport and container metadata
    kill/          — process/container target resolution and termination
    update.rs      — GitHub release checking and self-update logic
-   framework.rs   — app/framework detection from images, configs, processes
-   project.rs     — project-root detection via cwd/cmd marker walk
 ```
 
 - **Do not create new modules** without explicit human approval.
@@ -71,8 +68,7 @@ src/
    metadata lookup. Never scatter that logic across unrelated modules.
 - `filter.rs` owns all filtering logic. The `display/` module owns rendering
    logic. Respect these boundaries.
-- The `docker/` module owns container daemon communication and port-to-container
-   matching. The `kill/` module owns target resolution and termination flows.
+- The `nanodock` crate (re-exported as `portlens::docker` in `lib.rs`) owns container daemon communication, port-to-container matching, and the list of container runtime proxy processes; `what-stack` owns project-root and app/framework detection. The `kill/` module owns target resolution and termination flows.
 
 ---
 
@@ -85,7 +81,8 @@ src/
 | pico-args  | Minimal CLI argument parsing (zero dependencies)           |
 | anyhow     | Error handling with context                                |
 | serde/json | JSON serialization for `--json` output                     |
-| httparse   | HTTP/1.x response header and chunk-size parsing            |
+| nanodock   | Docker/Podman detection, port matching, container stop     |
+| what-stack | Project-root and app/framework detection                   |
 | log        | Logging facade for debug diagnostics via `--trace`         |
 
 ---
